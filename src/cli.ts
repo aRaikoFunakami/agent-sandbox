@@ -239,29 +239,11 @@ function cleanWorkspace(workspace: string): void {
     process.stdout.write("[agent-sandbox] No containers found for this workspace.\n");
   }
 
-  // 2. Remove devcontainer images generated for this workspace.
-  //    Image names follow the pattern: vsc-<workspace-basename>-<hash>
-  const workspaceName = workspace.split("/").pop() ?? "";
-  const allImagesResult = spawnSync(DOCKER, [
-    "images",
-    "--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}",
-  ], { encoding: "utf8" });
+  // 2. Remove images that were used by this workspace's containers + our cache tag.
+  //    Only removes images we can positively associate with this workspace via
+  //    container labels or our own cache tag — never pattern-matches by name alone.
+  const imagesToRemove: string[] = [...containerImages];
 
-  const imagesToRemove: string[] = [];
-  for (const line of allImagesResult.stdout.trim().split("\n").filter(Boolean)) {
-    const [nameTag, id] = line.split("\t");
-    if (!nameTag || !id) continue;
-    // Match the devcontainer-generated image or the stable cache tag
-    if (
-      nameTag.startsWith(`vsc-${workspaceName}-`) ||
-      containerImages.has(nameTag) ||
-      containerImages.has(id)
-    ) {
-      imagesToRemove.push(id);
-    }
-  }
-
-  // Also remove our stable cache image tag
   const cacheTag = stableCacheTag(workspace);
   const cacheResult = spawnSync(DOCKER, [
     "images", "-q", cacheTag,
