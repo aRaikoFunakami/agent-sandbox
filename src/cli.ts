@@ -1,0 +1,285 @@
+#!/usr/bin/env node
+/**
+ * agent-sandbox: run AI agents inside a devcontainer with a short command.
+ *
+ * Usage: agent-sandbox [-w WORKSPACE] <command> [args…]
+ */
+
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  realpathSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { which } from "./which";
+import { runInit } from "./init";
+
+// docker must be present at startup; devcontainer is auto-installed on first use.
+const DOCKER = which("docker");
+let _devcontainer: string | null = null;
+function getDevcontainer(): string {
+  if (!_devcontainer) _devcontainer = which("devcontainer");
+  return _devcontainer;
+}
+
+/** Walk up from start until a real (non-symlink) .devcontainer/ directory is found. */
+function findWorkspace(start: string): string {
+  let current = realpathSync(start);
+  while (true) {
+    const candidate = join(current, ".devcontainer");
+    if (existsSync(candidate)) {
+      const stat = lstatSync(candidate);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) {
+        return current;
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      throw new Error(
+        `error: could not find a .devcontainer/ directory in ${start} or any parent directory.`
+      );
+    }
+    current = parent;
+  }
+}
+
+/** Return true if a devcontainer for this workspace is already running. */
+function containerIsRunning(workspace: string): boolean {
+  const result = spawnSync(DOCKER, [
+    "ps",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+    "--format", "{{.ID}}",
+  ], { encoding: "utf8" });
+  return result.stdout.trim().length > 0;
+}
+
+function sleep(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function lockOwnerIsAlive(lockDir: string): boolean {
+  try {
+    const pid = Number(readFileSync(join(lockDir, "owner"), "utf8").split("\n")[0]);
+    return Number.isInteger(pid) && pid > 0 && process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+}
+
+function acquireWorkspaceLock(workspace: string): () => void {
+  const lockDir = join(workspace, ".devcontainer", ".agent-sandbox-up.lock");
+  const started = Date.now();
+  const waitTimeoutMs = 30 * 60 * 1000;
+  const staleAfterMs = 60 * 60 * 1000;
+
+  while (true) {
+    try {
+      mkdirSync(lockDir);
+      writeFileSync(join(lockDir, "owner"), `${process.pid}\n${new Date().toISOString()}\n`);
+      return () => rmSync(lockDir, { recursive: true, force: true });
+    } catch (err) {
+      if (!err || typeof err !== "object" || !("code" in err) || err.code !== "EEXIST") {
+        throw err;
+      }
+
+      const ageMs = Date.now() - lstatSync(lockDir).mtimeMs;
+      if (!lockOwnerIsAlive(lockDir) || ageMs > staleAfterMs) {
+        rmSync(lockDir, { recursive: true, force: true });
+        continue;
+      }
+
+      if (Date.now() - started > waitTimeoutMs) {
+        throw new Error(`Timed out waiting for devcontainer startup lock: ${lockDir}`);
+      }
+      sleep(500);
+    }
+  }
+}
+
+function stableCacheTag(workspace: string): string {
+  const dockerfile = join(workspace, ".devcontainer", "Dockerfile");
+  if (existsSync(dockerfile)) {
+    const content = readFileSync(dockerfile, "utf8");
+    if (content.includes("mcr.microsoft.com/playwright")) {
+      return "agent-sandbox-devcontainer:playwright-cli";
+    }
+  }
+  return "agent-sandbox-devcontainer:base";
+}
+
+function runningContainerImage(workspace: string): string | null {
+  const result = spawnSync(DOCKER, [
+    "ps",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+    "--format", "{{.Image}}",
+  ], { encoding: "utf8" });
+  return result.stdout.trim().split("\n").filter(Boolean)[0] ?? null;
+}
+
+function tagStableCacheImage(workspace: string): void {
+  const image = runningContainerImage(workspace);
+  if (!image) return;
+  const tag = stableCacheTag(workspace);
+  const result = spawnSync(DOCKER, ["tag", image, tag], { stdio: "inherit" });
+  if (result.status === 0) {
+    process.stderr.write(`[agent-sandbox] Tagged reusable cache image: ${tag}\n`);
+  }
+}
+
+/** Start the devcontainer if it is not already running. */
+function ensureContainer(workspace: string): void {
+  if (containerIsRunning(workspace)) return;
+
+  const releaseLock = acquireWorkspaceLock(workspace);
+  try {
+    if (containerIsRunning(workspace)) return;
+    process.stderr.write(
+      `[agent-sandbox] Container not running, starting devcontainer at ${workspace} …\n`
+    );
+    execFileSync(getDevcontainer(), ["up", "--workspace-folder", workspace], {
+      stdio: "inherit",
+    });
+    tagStableCacheImage(workspace);
+  } finally {
+    releaseLock();
+  }
+}
+
+/** Show status of devcontainer(s) for the given workspace. */
+function showStatus(workspace: string): void {
+  const result = spawnSync(DOCKER, [
+    "ps", "-a",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+    "--format", "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}",
+  ], { encoding: "utf8" });
+
+  const output = result.stdout.trim();
+  if (!output || output === "CONTAINER ID   NAMES   STATUS   IMAGE") {
+    process.stdout.write(`[agent-sandbox] No container found for ${workspace}\n`);
+    return;
+  }
+  process.stdout.write(output + "\n");
+}
+
+
+function stopContainers(workspace: string): void {
+  const result = spawnSync(DOCKER, [
+    "ps", "-q",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+  ], { encoding: "utf8" });
+
+  const ids = result.stdout.trim().split("\n").filter(Boolean);
+  if (ids.length === 0) {
+    process.stdout.write(`[agent-sandbox] No running container found for ${workspace}\n`);
+    return;
+  }
+  process.stdout.write(`[agent-sandbox] Stopping container(s): ${ids.join(", ")} …\n`);
+  spawnSync(DOCKER, ["stop", ...ids], { stdio: "inherit" });
+  process.stdout.write("[agent-sandbox] Container(s) stopped.\n");
+}
+
+
+function execInContainer(workspace: string, command: string[]): number {
+  const result = spawnSync(
+    getDevcontainer(),
+    ["exec", "--workspace-folder", workspace, ...command],
+    { stdio: "inherit" }
+  );
+  return result.status ?? 1;
+}
+
+function printUsage(): void {
+  process.stderr.write(
+    "usage: agent-sandbox <subcommand> [args…]\n" +
+    "\n" +
+    "Subcommands:\n" +
+    "  init [-f|--force] [--install=playwright-cli]\n" +
+    "                             Scaffold .devcontainer/ into the current directory\n" +
+    "  status                     Show container name and status\n" +
+    "  stop                       Stop the running devcontainer\n" +
+    "\n" +
+    "Agent commands (run inside devcontainer):\n" +
+    "  copilot --allow-all -p 'fix all failing tests'\n" +
+    "  claude --dangerously-skip-permissions -p 'run tests'\n" +
+    "  playwright-cli open https://example.com\n" +
+    "\n" +
+    "Options:\n" +
+    "  -w, --workspace PATH       Specify workspace folder explicitly\n" +
+    "\n" +
+    "Examples:\n" +
+    "  agent-sandbox init\n" +
+    "  agent-sandbox status\n" +
+    "  agent-sandbox stop\n" +
+    "  agent-sandbox copilot --allow-all -p 'fix all failing tests'\n" +
+    "  agent-sandbox claude --dangerously-skip-permissions -p 'run tests'\n" +
+    "  agent-sandbox playwright-cli open https://example.com\n" +
+    "  agent-sandbox -w /path/to/project copilot -p 'review code'\n"
+  );
+}
+
+function main(): void {
+  const args = process.argv.slice(2);
+
+  let workspaceOverride: string | null = null;
+  const filtered: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "--workspace" || args[i] === "-w") && i + 1 < args.length) {
+      // resolve() converts relative paths to absolute paths.
+      workspaceOverride = resolve(args[++i]);
+    } else {
+      filtered.push(args[i]);
+    }
+  }
+
+  if (filtered.length === 0) {
+    printUsage();
+    process.exit(1);
+  }
+
+  // init subcommand: scaffold devcontainer config, no container needed
+  if (filtered[0] === "init") {
+    runInit(filtered.slice(1));
+    return;
+  }
+
+  // status subcommand: show container name and status
+  if (filtered[0] === "status") {
+    try {
+      const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+      showStatus(workspace);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // stop subcommand: stop running container(s) for this workspace
+  if (filtered[0] === "stop") {
+    try {
+      const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+      stopContainers(workspace);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  try {
+    const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+    ensureContainer(workspace);
+    process.exit(execInContainer(workspace, filtered));
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
+}
+
+main();

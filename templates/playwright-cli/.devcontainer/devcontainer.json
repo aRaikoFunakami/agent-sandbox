@@ -1,0 +1,20 @@
+{
+  "name": "AI Agents (Copilot CLI + Claude Code + Playwright CLI)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "cacheFrom": ["agent-sandbox-devcontainer:playwright-cli"]
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/copilot-cli:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "initializeCommand": "mkdir -p .devcontainer/.host-auth && cp -r ${HOME}/.config/github-copilot .devcontainer/.host-auth/ 2>/dev/null; cp -r ${HOME}/.copilot .devcontainer/.host-auth/dot-copilot 2>/dev/null; cp -r ${HOME}/.config/gh .devcontainer/.host-auth/gh 2>/dev/null; mkdir -p .devcontainer/.host-auth/dot-claude && for f in config.json settings.json credentials.json mcp-config.json; do cp ${HOME}/.claude/$f .devcontainer/.host-auth/dot-claude/ 2>/dev/null; done; gh auth token > .devcontainer/.host-auth/gh-token 2>/dev/null; true",
+  "runArgs": ["--env-file", ".devcontainer/llm.env", "--ipc=host"],
+  "init": true,
+  "remoteUser": "ubuntu",
+  "containerEnv": {
+    "NODE_PATH": "/usr/lib/node_modules"
+  },
+  "postCreateCommand": "bash .devcontainer/setup-auth.sh && playwright-cli install --skills || true"
+}

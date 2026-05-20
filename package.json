@@ -1,0 +1,23 @@
+{
+  "name": "agent-sandbox",
+  "version": "0.1.0",
+  "description": "Run AI agents (Copilot CLI, Claude Code) inside a devcontainer with a short command",
+  "bin": {
+    "agent-sandbox": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

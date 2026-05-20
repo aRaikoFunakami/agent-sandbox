@@ -1,0 +1,248 @@
+#!/usr/bin/env node
+"use strict";
+/**
+ * agent-sandbox: run AI agents inside a devcontainer with a short command.
+ *
+ * Usage: agent-sandbox [-w WORKSPACE] <command> [args…]
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+const node_child_process_1 = require("node:child_process");
+const node_fs_1 = require("node:fs");
+const node_path_1 = require("node:path");
+const which_1 = require("./which");
+const init_1 = require("./init");
+// docker must be present at startup; devcontainer is auto-installed on first use.
+const DOCKER = (0, which_1.which)("docker");
+let _devcontainer = null;
+function getDevcontainer() {
+    if (!_devcontainer)
+        _devcontainer = (0, which_1.which)("devcontainer");
+    return _devcontainer;
+}
+/** Walk up from start until a real (non-symlink) .devcontainer/ directory is found. */
+function findWorkspace(start) {
+    let current = (0, node_fs_1.realpathSync)(start);
+    while (true) {
+        const candidate = (0, node_path_1.join)(current, ".devcontainer");
+        if ((0, node_fs_1.existsSync)(candidate)) {
+            const stat = (0, node_fs_1.lstatSync)(candidate);
+            if (stat.isDirectory() && !stat.isSymbolicLink()) {
+                return current;
+            }
+        }
+        const parent = (0, node_path_1.dirname)(current);
+        if (parent === current) {
+            throw new Error(`error: could not find a .devcontainer/ directory in ${start} or any parent directory.`);
+        }
+        current = parent;
+    }
+}
+/** Return true if a devcontainer for this workspace is already running. */
+function containerIsRunning(workspace) {
+    const result = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "ps",
+        "--filter", `label=devcontainer.local_folder=${workspace}`,
+        "--format", "{{.ID}}",
+    ], { encoding: "utf8" });
+    return result.stdout.trim().length > 0;
+}
+function sleep(milliseconds) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+function lockOwnerIsAlive(lockDir) {
+    try {
+        const pid = Number((0, node_fs_1.readFileSync)((0, node_path_1.join)(lockDir, "owner"), "utf8").split("\n")[0]);
+        return Number.isInteger(pid) && pid > 0 && process.kill(pid, 0);
+    }
+    catch {
+        return false;
+    }
+}
+function acquireWorkspaceLock(workspace) {
+    const lockDir = (0, node_path_1.join)(workspace, ".devcontainer", ".agent-sandbox-up.lock");
+    const started = Date.now();
+    const waitTimeoutMs = 30 * 60 * 1000;
+    const staleAfterMs = 60 * 60 * 1000;
+    while (true) {
+        try {
+            (0, node_fs_1.mkdirSync)(lockDir);
+            (0, node_fs_1.writeFileSync)((0, node_path_1.join)(lockDir, "owner"), `${process.pid}\n${new Date().toISOString()}\n`);
+            return () => (0, node_fs_1.rmSync)(lockDir, { recursive: true, force: true });
+        }
+        catch (err) {
+            if (!err || typeof err !== "object" || !("code" in err) || err.code !== "EEXIST") {
+                throw err;
+            }
+            const ageMs = Date.now() - (0, node_fs_1.lstatSync)(lockDir).mtimeMs;
+            if (!lockOwnerIsAlive(lockDir) || ageMs > staleAfterMs) {
+                (0, node_fs_1.rmSync)(lockDir, { recursive: true, force: true });
+                continue;
+            }
+            if (Date.now() - started > waitTimeoutMs) {
+                throw new Error(`Timed out waiting for devcontainer startup lock: ${lockDir}`);
+            }
+            sleep(500);
+        }
+    }
+}
+function stableCacheTag(workspace) {
+    const dockerfile = (0, node_path_1.join)(workspace, ".devcontainer", "Dockerfile");
+    if ((0, node_fs_1.existsSync)(dockerfile)) {
+        const content = (0, node_fs_1.readFileSync)(dockerfile, "utf8");
+        if (content.includes("mcr.microsoft.com/playwright")) {
+            return "agent-sandbox-devcontainer:playwright-cli";
+        }
+    }
+    return "agent-sandbox-devcontainer:base";
+}
+function runningContainerImage(workspace) {
+    const result = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "ps",
+        "--filter", `label=devcontainer.local_folder=${workspace}`,
+        "--format", "{{.Image}}",
+    ], { encoding: "utf8" });
+    return result.stdout.trim().split("\n").filter(Boolean)[0] ?? null;
+}
+function tagStableCacheImage(workspace) {
+    const image = runningContainerImage(workspace);
+    if (!image)
+        return;
+    const tag = stableCacheTag(workspace);
+    const result = (0, node_child_process_1.spawnSync)(DOCKER, ["tag", image, tag], { stdio: "inherit" });
+    if (result.status === 0) {
+        process.stderr.write(`[agent-sandbox] Tagged reusable cache image: ${tag}\n`);
+    }
+}
+/** Start the devcontainer if it is not already running. */
+function ensureContainer(workspace) {
+    if (containerIsRunning(workspace))
+        return;
+    const releaseLock = acquireWorkspaceLock(workspace);
+    try {
+        if (containerIsRunning(workspace))
+            return;
+        process.stderr.write(`[agent-sandbox] Container not running, starting devcontainer at ${workspace} …\n`);
+        (0, node_child_process_1.execFileSync)(getDevcontainer(), ["up", "--workspace-folder", workspace], {
+            stdio: "inherit",
+        });
+        tagStableCacheImage(workspace);
+    }
+    finally {
+        releaseLock();
+    }
+}
+/** Show status of devcontainer(s) for the given workspace. */
+function showStatus(workspace) {
+    const result = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "ps", "-a",
+        "--filter", `label=devcontainer.local_folder=${workspace}`,
+        "--format", "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}",
+    ], { encoding: "utf8" });
+    const output = result.stdout.trim();
+    if (!output || output === "CONTAINER ID   NAMES   STATUS   IMAGE") {
+        process.stdout.write(`[agent-sandbox] No container found for ${workspace}\n`);
+        return;
+    }
+    process.stdout.write(output + "\n");
+}
+function stopContainers(workspace) {
+    const result = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "ps", "-q",
+        "--filter", `label=devcontainer.local_folder=${workspace}`,
+    ], { encoding: "utf8" });
+    const ids = result.stdout.trim().split("\n").filter(Boolean);
+    if (ids.length === 0) {
+        process.stdout.write(`[agent-sandbox] No running container found for ${workspace}\n`);
+        return;
+    }
+    process.stdout.write(`[agent-sandbox] Stopping container(s): ${ids.join(", ")} …\n`);
+    (0, node_child_process_1.spawnSync)(DOCKER, ["stop", ...ids], { stdio: "inherit" });
+    process.stdout.write("[agent-sandbox] Container(s) stopped.\n");
+}
+function execInContainer(workspace, command) {
+    const result = (0, node_child_process_1.spawnSync)(getDevcontainer(), ["exec", "--workspace-folder", workspace, ...command], { stdio: "inherit" });
+    return result.status ?? 1;
+}
+function printUsage() {
+    process.stderr.write("usage: agent-sandbox <subcommand> [args…]\n" +
+        "\n" +
+        "Subcommands:\n" +
+        "  init [-f|--force] [--install=playwright-cli]\n" +
+        "                             Scaffold .devcontainer/ into the current directory\n" +
+        "  status                     Show container name and status\n" +
+        "  stop                       Stop the running devcontainer\n" +
+        "\n" +
+        "Agent commands (run inside devcontainer):\n" +
+        "  copilot --allow-all -p 'fix all failing tests'\n" +
+        "  claude --dangerously-skip-permissions -p 'run tests'\n" +
+        "  playwright-cli open https://example.com\n" +
+        "\n" +
+        "Options:\n" +
+        "  -w, --workspace PATH       Specify workspace folder explicitly\n" +
+        "\n" +
+        "Examples:\n" +
+        "  agent-sandbox init\n" +
+        "  agent-sandbox status\n" +
+        "  agent-sandbox stop\n" +
+        "  agent-sandbox copilot --allow-all -p 'fix all failing tests'\n" +
+        "  agent-sandbox claude --dangerously-skip-permissions -p 'run tests'\n" +
+        "  agent-sandbox playwright-cli open https://example.com\n" +
+        "  agent-sandbox -w /path/to/project copilot -p 'review code'\n");
+}
+function main() {
+    const args = process.argv.slice(2);
+    let workspaceOverride = null;
+    const filtered = [];
+    for (let i = 0; i < args.length; i++) {
+        if ((args[i] === "--workspace" || args[i] === "-w") && i + 1 < args.length) {
+            // resolve() converts relative paths to absolute paths.
+            workspaceOverride = (0, node_path_1.resolve)(args[++i]);
+        }
+        else {
+            filtered.push(args[i]);
+        }
+    }
+    if (filtered.length === 0) {
+        printUsage();
+        process.exit(1);
+    }
+    // init subcommand: scaffold devcontainer config, no container needed
+    if (filtered[0] === "init") {
+        (0, init_1.runInit)(filtered.slice(1));
+        return;
+    }
+    // status subcommand: show container name and status
+    if (filtered[0] === "status") {
+        try {
+            const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+            showStatus(workspace);
+        }
+        catch (err) {
+            process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+            process.exit(1);
+        }
+        return;
+    }
+    // stop subcommand: stop running container(s) for this workspace
+    if (filtered[0] === "stop") {
+        try {
+            const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+            stopContainers(workspace);
+        }
+        catch (err) {
+            process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+            process.exit(1);
+        }
+        return;
+    }
+    try {
+        const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+        ensureContainer(workspace);
+        process.exit(execInContainer(workspace, filtered));
+    }
+    catch (err) {
+        process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+    }
+}
+main();
