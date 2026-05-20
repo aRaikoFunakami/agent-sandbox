@@ -5,10 +5,6 @@
   "bin": {
     "agent-sandbox": "dist/cli.js"
   },
-  "files": [
-    "dist",
-    "templates"
-  ],
   "scripts": {
     "build": "tsc"
   },
@@ -18,9 +14,6 @@
   },
   "engines": {
     "node": ">=20"
-  },
-  "installConfig": {
-    "install-links": true
   },
   "license": "MIT"
 }
