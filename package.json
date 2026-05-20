@@ -1,6 +1,6 @@
 {
   "name": "agent-sandbox",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run AI agents (Copilot CLI, Claude Code) inside a devcontainer with a short command",
   "bin": {
     "agent-sandbox": "dist/cli.js"
