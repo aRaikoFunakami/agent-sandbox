@@ -25,7 +25,8 @@ RUN set -eux; \
       git \
       gnupg \
       openjdk-17-jdk-headless \
-      unzip; \
+      unzip \
+      adb; \
     \
     # Resolve arch-specific OpenJDK path to a stable symlink so JAVA_HOME works on amd64 and arm64
     JAVA_REAL="$(dirname $(dirname $(readlink -f $(command -v javac))))"; \
@@ -52,10 +53,16 @@ RUN set -eux; \
     yes | sdkmanager --licenses >/dev/null; \
     sdkmanager "platform-tools"; \
     \
+    # Replace x86_64 adb shipped by sdkmanager with the native (multi-arch) one from apt.
+    # On arm64 hosts (Apple Silicon + Colima), the SDK adb cannot execute.
+    if [ -x /usr/bin/adb ]; then \
+      ln -sf /usr/bin/adb "${ANDROID_HOME}/platform-tools/adb"; \
+    fi; \
+    \
     # Appium + uiautomator2 driver (pinned)
     npm install -g "appium@${APPIUM_VERSION}"; \
     appium driver install --source=npm \
-      --package="appium-uiautomator2-driver@${UIAUTOMATOR2_DRIVER_VERSION}" uiautomator2; \
+      "appium-uiautomator2-driver@${UIAUTOMATOR2_DRIVER_VERSION}"; \
     \
     # appium-cli from GitHub via uv
     uv tool install --python 3.12 --force \

@@ -5,6 +5,8 @@
     "ANDROID_SDK_ROOT": "/opt/android-sdk",
     "JAVA_HOME": "/opt/java-17",
     "APPIUM_HOME": "/opt/appium",
-    "ADB_SERVER_SOCKET": "tcp:host.docker.internal:5037"
+    "ADB_SERVER_SOCKET": "tcp:host.docker.internal:5037",
+    "APPIUM_REMOTE_ADB_HOST": "host.docker.internal",
+    "APPIUM_REMOTE_ADB_PORT": "5037"
   }
 }
