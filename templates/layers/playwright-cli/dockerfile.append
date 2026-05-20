@@ -1,5 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.60.0-noble
-
+# ---- playwright-cli layer ----
 # Playwright image already has Node.js, browser system dependencies, fonts,
 # sandbox configuration, and user 'ubuntu' (UID 1000).
 

@@ -1,0 +1,10 @@
+{
+  "runArgs": ["--add-host=host.docker.internal:host-gateway"],
+  "containerEnv": {
+    "ANDROID_HOME": "/opt/android-sdk",
+    "ANDROID_SDK_ROOT": "/opt/android-sdk",
+    "JAVA_HOME": "/opt/java-17",
+    "APPIUM_HOME": "/opt/appium",
+    "ADB_SERVER_SOCKET": "tcp:host.docker.internal:5037"
+  }
+}

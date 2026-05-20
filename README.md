@@ -31,14 +31,21 @@ npm install -g ./agent-sandbox
 
 ```bash
 cd your-project
-agent-sandbox init                            # 軽量 base profile
-agent-sandbox init --install=playwright-cli   # playwright-cli profile
-agent-sandbox init --force                    # 既存の設定を上書き
+agent-sandbox init                                          # 軽量 base profile
+agent-sandbox init --install=playwright-cli                 # playwright-cli profile
+agent-sandbox init --install=appium-cli                     # appium-cli profile
+agent-sandbox init --install=playwright-cli,appium-cli      # 両方を同時に有効化
+agent-sandbox init --install=playwright-cli --install=appium-cli  # 繰り返し指定でも同じ
+agent-sandbox init --force                                  # 既存の設定を上書き
 ```
 
-デフォルトの `base` profile は、公式 Dev Containers base image (`mcr.microsoft.com/devcontainers/base:ubuntu-24.04`) を使い、Copilot CLI / Claude Code / GitHub CLI だけを Features で入れます。Playwright と Chromium は入りません。
+デフォルトの `base` profile は、公式 Dev Containers base image (`mcr.microsoft.com/devcontainers/base:ubuntu-24.04`) を使い、Copilot CLI / Claude Code / GitHub CLI だけを Features で入れます。Playwright や Appium は入りません。
 
 `--install=playwright-cli` を指定した場合だけ、Playwright 公式 image をベースに `@playwright/cli` と Chromium をイメージビルド時に入れます。ブラウザを `postCreateCommand` で入れないため、ワークスペースごとのコンテナ writable layer が肥大化しにくくなります。
+
+`--install=appium-cli` を指定すると、OpenJDK 17 + Android command-line tools + `platform-tools` + Appium 3 (`uiautomator2` driver pinned) + [`aRaikoFunakami/appium-cli`](https://github.com/aRaikoFunakami/appium-cli) を `uv tool install` でビルド時に導入します。`xcuitest` driver は入りません (iOS 自動化は macOS ホスト/ Xcode 必須のためコンテナ対象外)。Android デバイスへの ADB 接続は **既定ではホスト側 ADB server に TCP で接続** します (下記 [Android デバイス接続](#android-デバイス接続) 参照)。
+
+`--install` を複数指定すると、`appium-cli+playwright-cli` の組み合わせ profile が生成され、Playwright image の上に Appium レイヤを積みます。生成物の `agent-sandbox-devcontainer:<profile>` タグはアルファベット順 (`appium-cli+playwright-cli`) で安定化されます。
 
 生成後は `.devcontainer/llm.env` を編集してから `agent-sandbox copilot --version` で起動確認できます。
 
@@ -67,16 +74,68 @@ agent-sandbox playwright-cli open https://example.com
 agent-sandbox playwright-cli snapshot
 agent-sandbox playwright-cli close
 
+# appium-cli (--install=appium-cli で init した場合)
+agent-sandbox appium-cli doctor
+agent-sandbox appium-cli devices --platform android
+agent-sandbox appium-cli server start
+agent-sandbox appium-cli session start
+agent-sandbox appium-cli snapshot
+
 # ワークスペースを明示指定
 agent-sandbox -w /path/to/project copilot --allow-all -p "review code"
 ```
+
+## Android デバイス接続
+
+`--install=appium-cli` プロファイルは、Android デバイスに 2 通りの方法で接続できます。
+
+### 既定: ホスト ADB server に TCP 接続 (macOS / Linux 両対応)
+
+生成された `.devcontainer/devcontainer.json` の `containerEnv` には `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037` がデフォルトで入っているため、コンテナ内 `adb` は **ホスト側で稼働中の ADB server** に接続します。
+
+ホスト側で次のように ADB server を LAN 公開モードで起動します:
+
+```bash
+# ホストの別ターミナルで実行
+adb kill-server
+adb -a -P 5037 nodaemon server
+```
+
+その後、コンテナ内から:
+
+```bash
+agent-sandbox appium-cli devices --platform android
+agent-sandbox appium-cli server start
+```
+
+> ⚠️ `adb -a` は ADB server をネットワークインタフェースに公開します。ファイアウォール内 / 信頼できるネットワークでのみ使用してください。
+
+### opt-in: Linux ホストでの USB pass-through
+
+Linux ホストで USB デバイスを直接コンテナに渡したい場合は、生成された `.devcontainer/devcontainer.json` を以下のように手動編集してから `agent-sandbox stop` → 再起動してください。
+
+1. `containerEnv.ADB_SERVER_SOCKET` を削除 (コンテナ内 `adb` をローカルで起動させるため)。
+2. `runArgs` を以下に書き換え:
+
+```json
+"runArgs": [
+  "--env-file",
+  ".devcontainer/llm.env",
+  "--add-host=host.docker.internal:host-gateway",
+  "--device=/dev/bus/usb"
+]
+```
+
+3. ホスト側で対象 Android デバイスへの udev rule (USB ID ベース) を設定し、`plugdev` グループから読み書き可能にしておく。
+
+macOS では Docker Desktop の制約により USB pass-through は使えないため、必ず既定の TCP モードを使用してください。
 
 ## 動作
 
 1. カレントディレクトリから上方向に `.devcontainer/` ディレクトリを探す
 2. `devcontainer` コマンドが未インストールの場合、`npm install -g @devcontainers/cli` を自動実行
 3. 対象 devcontainer が未起動なら、ワークスペース単位のロックを取得してから `devcontainer up --workspace-folder <path>` を実行
-4. 起動後のイメージを `agent-sandbox-devcontainer:base` または `agent-sandbox-devcontainer:playwright-cli` に tag し、別ワークスペースの `cacheFrom` に使えるようにする
+4. 起動後のイメージを `agent-sandbox-devcontainer:<profile>` (例: `base` / `playwright-cli` / `appium-cli` / `appium-cli+playwright-cli`) に tag し、別ワークスペースの `cacheFrom` に使えるようにする
 5. `devcontainer exec --workspace-folder <path> <command>` を実行してコマンドの終了コードをそのまま返す
 
 ## 同時実行時の挙動
@@ -95,5 +154,7 @@ agent-sandbox -w /path/to/project copilot --allow-all -p "review code"
 |---|---:|---:|
 | `base` | Images +630MB / Containers +627MB | 約 627MB / workspace |
 | `playwright-cli` | Images +620MB / Containers +626MB | 約 625MB / workspace |
+| `appium-cli` | (未測定: OpenJDK 17 + Android SDK platform-tools + Appium + uiautomator2 + appium-cli) | (未測定) |
+| `appium-cli+playwright-cli` | (未測定: Playwright image + 上記 Appium レイヤ) | (未測定) |
 
 以前のように `postCreateCommand` で Chromium を入れる構成では Playwright 利用時の writable layer が約 1.62GB / workspace まで増えていました。現在は Dockerfile のビルド時に Chromium を入れるため、その増分は抑えられています。

@@ -1,0 +1,69 @@
+# ---- appium-cli layer ----
+ARG DEBIAN_FRONTEND=noninteractive
+ARG NODE_MAJOR=22
+ARG ANDROID_CMDLINE_TOOLS_VERSION=13114758
+ARG APPIUM_VERSION=3.4.2
+ARG UIAUTOMATOR2_DRIVER_VERSION=7.5.0
+ARG APPIUM_CLI_REF=main
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV JAVA_HOME=/opt/java-17
+ENV APPIUM_HOME=/opt/appium
+ENV UV_TOOL_DIR=/opt/uv-tools
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
+ENV PATH="${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/cmdline-tools/latest/bin:${PATH}"
+
+# uv binary (multi-arch image)
+COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /usr/local/bin/
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+      gnupg \
+      openjdk-17-jdk-headless \
+      unzip; \
+    \
+    # Resolve arch-specific OpenJDK path to a stable symlink so JAVA_HOME works on amd64 and arm64
+    JAVA_REAL="$(dirname $(dirname $(readlink -f $(command -v javac))))"; \
+    ln -snf "$JAVA_REAL" /opt/java-17; \
+    \
+    # Install Node only if missing or below Appium engines requirement
+    if ! command -v node >/dev/null \
+       || ! node -e 'const v=process.versions.node.split(".").map(Number);const ok=(v[0]>=24)||(v[0]===22&&v[1]>=12)||(v[0]===20&&v[1]>=19);process.exit(ok?0:1)'; then \
+      mkdir -p /etc/apt/keyrings; \
+      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg; \
+      echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends nodejs; \
+    fi; \
+    \
+    # Android command-line tools + platform-tools
+    mkdir -p "${ANDROID_HOME}/cmdline-tools" "${APPIUM_HOME}" "${UV_TOOL_DIR}"; \
+    curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+      -o /tmp/cmdline-tools.zip; \
+    unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools; \
+    mv /tmp/cmdline-tools/cmdline-tools "${ANDROID_HOME}/cmdline-tools/latest"; \
+    yes | sdkmanager --licenses >/dev/null; \
+    sdkmanager "platform-tools"; \
+    \
+    # Appium + uiautomator2 driver (pinned)
+    npm install -g "appium@${APPIUM_VERSION}"; \
+    appium driver install --source=npm \
+      --package="appium-uiautomator2-driver@${UIAUTOMATOR2_DRIVER_VERSION}" uiautomator2; \
+    \
+    # appium-cli from GitHub via uv
+    uv tool install --python 3.12 --force \
+      "git+https://github.com/aRaikoFunakami/appium-cli.git@${APPIUM_CLI_REF}"; \
+    \
+    # Make all shared dirs writable by both 'vscode' and 'ubuntu' users
+    chmod -R a+rwx "${APPIUM_HOME}" "${UV_TOOL_DIR}" "${ANDROID_HOME}"; \
+    \
+    # Cleanup
+    npm cache clean --force; \
+    rm -rf /tmp/cmdline-tools /tmp/cmdline-tools.zip /var/lib/apt/lists/*

@@ -1,0 +1,7 @@
+{
+  "runArgs": ["--ipc=host"],
+  "remoteUser": "ubuntu",
+  "containerEnv": {
+    "NODE_PATH": "/usr/lib/node_modules"
+  }
+}

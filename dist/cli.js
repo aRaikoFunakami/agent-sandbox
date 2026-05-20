@@ -86,9 +86,37 @@ function acquireWorkspaceLock(workspace) {
     }
 }
 function stableCacheTag(workspace) {
+    // Prefer build.cacheFrom from generated devcontainer.json.
+    const devcontainerJson = (0, node_path_1.join)(workspace, ".devcontainer", "devcontainer.json");
+    if ((0, node_fs_1.existsSync)(devcontainerJson)) {
+        try {
+            const parsed = JSON.parse((0, node_fs_1.readFileSync)(devcontainerJson, "utf8"));
+            const cacheFrom = parsed?.build?.cacheFrom;
+            if (Array.isArray(cacheFrom)) {
+                const tag = cacheFrom.find((entry) => typeof entry === "string" && entry.startsWith("agent-sandbox-devcontainer:"));
+                if (tag)
+                    return tag;
+            }
+        }
+        catch {
+            // Fall through to Dockerfile-based detection.
+        }
+    }
     const dockerfile = (0, node_path_1.join)(workspace, ".devcontainer", "Dockerfile");
     if ((0, node_fs_1.existsSync)(dockerfile)) {
         const content = (0, node_fs_1.readFileSync)(dockerfile, "utf8");
+        // New marker emitted by init: "# agent-sandbox-installs: a,b,c"
+        const markerMatch = content.match(/^#\s*agent-sandbox-installs:\s*(.*)$/m);
+        if (markerMatch) {
+            const list = markerMatch[1]
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean)
+                .sort();
+            const profile = list.length === 0 ? "base" : list.join("+");
+            return `agent-sandbox-devcontainer:${profile}`;
+        }
+        // Legacy fallback for workspaces generated before the layer refactor.
         if (content.includes("mcr.microsoft.com/playwright")) {
             return "agent-sandbox-devcontainer:playwright-cli";
         }
@@ -167,26 +195,34 @@ function printUsage() {
     process.stderr.write("usage: agent-sandbox <subcommand> [args…]\n" +
         "\n" +
         "Subcommands:\n" +
-        "  init [-f|--force] [--install=playwright-cli]\n" +
-        "                             Scaffold .devcontainer/ into the current directory\n" +
+        "  init [-f|--force] [--install=<targets>]\n" +
+        "                             Scaffold .devcontainer/ into the current directory.\n" +
+        "                             Targets: playwright-cli, appium-cli\n" +
+        "                             (comma-separated or repeat --install=...)\n" +
         "  status                     Show container name and status\n" +
         "  stop                       Stop the running devcontainer\n" +
         "\n" +
         "Agent commands (run inside devcontainer):\n" +
         "  copilot --allow-all -p 'fix all failing tests'\n" +
         "  claude --dangerously-skip-permissions -p 'run tests'\n" +
-        "  playwright-cli open https://example.com\n" +
+        "  playwright-cli open https://example.com     (requires --install=playwright-cli)\n" +
+        "  appium-cli doctor                            (requires --install=appium-cli)\n" +
         "\n" +
         "Options:\n" +
         "  -w, --workspace PATH       Specify workspace folder explicitly\n" +
         "\n" +
         "Examples:\n" +
         "  agent-sandbox init\n" +
+        "  agent-sandbox init --install=playwright-cli\n" +
+        "  agent-sandbox init --install=appium-cli\n" +
+        "  agent-sandbox init --install=playwright-cli,appium-cli\n" +
+        "  agent-sandbox init --install=playwright-cli --install=appium-cli\n" +
         "  agent-sandbox status\n" +
         "  agent-sandbox stop\n" +
         "  agent-sandbox copilot --allow-all -p 'fix all failing tests'\n" +
         "  agent-sandbox claude --dangerously-skip-permissions -p 'run tests'\n" +
         "  agent-sandbox playwright-cli open https://example.com\n" +
+        "  agent-sandbox appium-cli devices --platform android\n" +
         "  agent-sandbox -w /path/to/project copilot -p 'review code'\n");
 }
 function main() {
