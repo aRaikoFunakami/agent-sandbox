@@ -17,13 +17,13 @@ devcontainer-cli が Node.js/npm を前提とするため、同じ npm エコシ
 
 ```bash
 # npm でグローバルインストール（推奨）
-npm install -g git+https://github.com/aRaikoFunakami/agent-sandbox.git
+npm install -g --install-links=true git+https://github.com/aRaikoFunakami/agent-sandbox.git
 
 # または開発用ローカルインストール
 npm install -g ./agent-sandbox
 ```
 
-このパッケージは `dist/` と `templates/` を同梱しているため、インストール時に TypeScript のビルドは不要です。
+このパッケージは `dist/` と `templates/` を同梱しているため、インストール時に TypeScript のビルドは不要です。`--install-links=true` は、npm の設定が `install-links=false` の環境でも GitHub からのグローバルインストールを実体コピーにして、消える可能性がある npm 一時ディレクトリへの symlink を避けるために指定しています。
 
 ## 使い方
 
