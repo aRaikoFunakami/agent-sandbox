@@ -74,7 +74,7 @@ function selectedLayers(targets: Set<InstallTarget>): InstallTarget[] {
 
 function profileName(targets: Set<InstallTarget>): string {
   if (targets.size === 0) return "base";
-  return Array.from(targets).sort().join("+");
+  return Array.from(targets).sort().join("--");
 }
 
 function displayName(targets: Set<InstallTarget>): string {

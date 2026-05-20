@@ -51,7 +51,7 @@ function selectedLayers(targets) {
 function profileName(targets) {
     if (targets.size === 0)
         return "base";
-    return Array.from(targets).sort().join("+");
+    return Array.from(targets).sort().join("--");
 }
 function displayName(targets) {
     const parts = ["Copilot CLI", "Claude Code"];

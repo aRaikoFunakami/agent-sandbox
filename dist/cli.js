@@ -113,7 +113,7 @@ function stableCacheTag(workspace) {
                 .map((s) => s.trim())
                 .filter(Boolean)
                 .sort();
-            const profile = list.length === 0 ? "base" : list.join("+");
+            const profile = list.length === 0 ? "base" : list.join("--");
             return `agent-sandbox-devcontainer:${profile}`;
         }
         // Legacy fallback for workspaces generated before the layer refactor.
