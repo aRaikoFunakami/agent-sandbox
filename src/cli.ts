@@ -214,6 +214,75 @@ function stopContainers(workspace: string): void {
 }
 
 
+function cleanWorkspace(workspace: string): void {
+  // 1. Find ALL containers (running + stopped) for this workspace.
+  const containerResult = spawnSync(DOCKER, [
+    "ps", "-a", "-q",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+  ], { encoding: "utf8" });
+  const containerIds = containerResult.stdout.trim().split("\n").filter(Boolean);
+
+  // Collect image IDs before removing containers (so we can remove dangling images).
+  const imageResult = spawnSync(DOCKER, [
+    "ps", "-a",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+    "--format", "{{.Image}}",
+  ], { encoding: "utf8" });
+  const containerImages = new Set(imageResult.stdout.trim().split("\n").filter(Boolean));
+
+  if (containerIds.length > 0) {
+    process.stdout.write(
+      `[agent-sandbox] Removing ${containerIds.length} container(s): ${containerIds.join(", ")} …\n`
+    );
+    spawnSync(DOCKER, ["rm", "-f", ...containerIds], { stdio: "inherit" });
+  } else {
+    process.stdout.write("[agent-sandbox] No containers found for this workspace.\n");
+  }
+
+  // 2. Remove devcontainer images generated for this workspace.
+  //    Image names follow the pattern: vsc-<workspace-basename>-<hash>
+  const workspaceName = workspace.split("/").pop() ?? "";
+  const allImagesResult = spawnSync(DOCKER, [
+    "images",
+    "--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}",
+  ], { encoding: "utf8" });
+
+  const imagesToRemove: string[] = [];
+  for (const line of allImagesResult.stdout.trim().split("\n").filter(Boolean)) {
+    const [nameTag, id] = line.split("\t");
+    if (!nameTag || !id) continue;
+    // Match the devcontainer-generated image or the stable cache tag
+    if (
+      nameTag.startsWith(`vsc-${workspaceName}-`) ||
+      containerImages.has(nameTag) ||
+      containerImages.has(id)
+    ) {
+      imagesToRemove.push(id);
+    }
+  }
+
+  // Also remove our stable cache image tag
+  const cacheTag = stableCacheTag(workspace);
+  const cacheResult = spawnSync(DOCKER, [
+    "images", "-q", cacheTag,
+  ], { encoding: "utf8" });
+  const cacheId = cacheResult.stdout.trim();
+  if (cacheId) imagesToRemove.push(cacheId);
+
+  const uniqueImages = [...new Set(imagesToRemove)];
+  if (uniqueImages.length > 0) {
+    process.stdout.write(
+      `[agent-sandbox] Removing ${uniqueImages.length} image(s) …\n`
+    );
+    spawnSync(DOCKER, ["rmi", "-f", ...uniqueImages], { stdio: "inherit" });
+  } else {
+    process.stdout.write("[agent-sandbox] No related images found.\n");
+  }
+
+  process.stdout.write("[agent-sandbox] Clean complete.\n");
+}
+
+
 function execInContainer(workspace: string, command: string[]): number {
   const result = spawnSync(
     getDevcontainer(),
@@ -234,6 +303,7 @@ function printUsage(): void {
     "                             (comma-separated or repeat --install=...)\n" +
     "  status                     Show container name and status\n" +
     "  stop                       Stop the running devcontainer\n" +
+    "  clean                      Remove containers and old images for this workspace\n" +
     "\n" +
     "Agent commands (run inside devcontainer):\n" +
     "  copilot --allow-all -p 'fix all failing tests'\n" +
@@ -303,6 +373,18 @@ function main(): void {
     try {
       const workspace = workspaceOverride ?? findWorkspace(process.cwd());
       stopContainers(workspace);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // clean subcommand: remove stopped containers + old images for this workspace
+  if (filtered[0] === "clean") {
+    try {
+      const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+      cleanWorkspace(workspace);
     } catch (err) {
       process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);

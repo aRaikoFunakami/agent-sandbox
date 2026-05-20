@@ -187,6 +187,64 @@ function stopContainers(workspace) {
     (0, node_child_process_1.spawnSync)(DOCKER, ["stop", ...ids], { stdio: "inherit" });
     process.stdout.write("[agent-sandbox] Container(s) stopped.\n");
 }
+function cleanWorkspace(workspace) {
+    // 1. Find ALL containers (running + stopped) for this workspace.
+    const containerResult = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "ps", "-a", "-q",
+        "--filter", `label=devcontainer.local_folder=${workspace}`,
+    ], { encoding: "utf8" });
+    const containerIds = containerResult.stdout.trim().split("\n").filter(Boolean);
+    // Collect image IDs before removing containers (so we can remove dangling images).
+    const imageResult = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "ps", "-a",
+        "--filter", `label=devcontainer.local_folder=${workspace}`,
+        "--format", "{{.Image}}",
+    ], { encoding: "utf8" });
+    const containerImages = new Set(imageResult.stdout.trim().split("\n").filter(Boolean));
+    if (containerIds.length > 0) {
+        process.stdout.write(`[agent-sandbox] Removing ${containerIds.length} container(s): ${containerIds.join(", ")} …\n`);
+        (0, node_child_process_1.spawnSync)(DOCKER, ["rm", "-f", ...containerIds], { stdio: "inherit" });
+    }
+    else {
+        process.stdout.write("[agent-sandbox] No containers found for this workspace.\n");
+    }
+    // 2. Remove devcontainer images generated for this workspace.
+    //    Image names follow the pattern: vsc-<workspace-basename>-<hash>
+    const workspaceName = workspace.split("/").pop() ?? "";
+    const allImagesResult = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "images",
+        "--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}",
+    ], { encoding: "utf8" });
+    const imagesToRemove = [];
+    for (const line of allImagesResult.stdout.trim().split("\n").filter(Boolean)) {
+        const [nameTag, id] = line.split("\t");
+        if (!nameTag || !id)
+            continue;
+        // Match the devcontainer-generated image or the stable cache tag
+        if (nameTag.startsWith(`vsc-${workspaceName}-`) ||
+            containerImages.has(nameTag) ||
+            containerImages.has(id)) {
+            imagesToRemove.push(id);
+        }
+    }
+    // Also remove our stable cache image tag
+    const cacheTag = stableCacheTag(workspace);
+    const cacheResult = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "images", "-q", cacheTag,
+    ], { encoding: "utf8" });
+    const cacheId = cacheResult.stdout.trim();
+    if (cacheId)
+        imagesToRemove.push(cacheId);
+    const uniqueImages = [...new Set(imagesToRemove)];
+    if (uniqueImages.length > 0) {
+        process.stdout.write(`[agent-sandbox] Removing ${uniqueImages.length} image(s) …\n`);
+        (0, node_child_process_1.spawnSync)(DOCKER, ["rmi", "-f", ...uniqueImages], { stdio: "inherit" });
+    }
+    else {
+        process.stdout.write("[agent-sandbox] No related images found.\n");
+    }
+    process.stdout.write("[agent-sandbox] Clean complete.\n");
+}
 function execInContainer(workspace, command) {
     const result = (0, node_child_process_1.spawnSync)(getDevcontainer(), ["exec", "--workspace-folder", workspace, ...command], { stdio: "inherit" });
     return result.status ?? 1;
@@ -201,6 +259,7 @@ function printUsage() {
         "                             (comma-separated or repeat --install=...)\n" +
         "  status                     Show container name and status\n" +
         "  stop                       Stop the running devcontainer\n" +
+        "  clean                      Remove containers and old images for this workspace\n" +
         "\n" +
         "Agent commands (run inside devcontainer):\n" +
         "  copilot --allow-all -p 'fix all failing tests'\n" +
@@ -264,6 +323,18 @@ function main() {
         try {
             const workspace = workspaceOverride ?? findWorkspace(process.cwd());
             stopContainers(workspace);
+        }
+        catch (err) {
+            process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+            process.exit(1);
+        }
+        return;
+    }
+    // clean subcommand: remove stopped containers + old images for this workspace
+    if (filtered[0] === "clean") {
+        try {
+            const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+            cleanWorkspace(workspace);
         }
         catch (err) {
             process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
