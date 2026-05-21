@@ -5,6 +5,10 @@
 RUN npm install -g @playwright/cli@latest \
     && playwright-cli install-browser chromium
 
+# Ensure /ms-playwright is writable by ubuntu so Playwright CLI can
+# initialize .links and other runtime metadata at container start.
+RUN chown -R ubuntu:ubuntu /ms-playwright
+
 RUN apt-get update && apt-get install -y --no-install-recommends sudo \
     && echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/ubuntu \
     && rm -rf /var/lib/apt/lists/*
