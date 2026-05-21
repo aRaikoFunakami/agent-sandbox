@@ -64,6 +64,14 @@ function containerIsRunning(workspace: string): boolean {
   return result.stdout.trim().length > 0;
 }
 
+function workspaceContainerIds(workspace: string): string[] {
+  const result = spawnSync(DOCKER, [
+    "ps", "-a", "-q",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+  ], { encoding: "utf8" });
+  return result.stdout.trim().split("\n").filter(Boolean);
+}
+
 function sleep(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
@@ -247,7 +255,17 @@ function promptConfirm(message: string): Promise<boolean> {
 /** Check if .devcontainer files changed and prompt for rebuild if needed. Returns true if clean was performed. */
 async function checkDevcontainerChanged(workspace: string): Promise<boolean> {
   const savedHash = readSavedHash(workspace);
-  if (savedHash === null) return false; // First run — no baseline yet.
+  if (savedHash === null) {
+    const containerIds = workspaceContainerIds(workspace);
+    if (containerIds.length > 0) {
+      process.stderr.write(
+        "[agent-sandbox] No devcontainer state file found, removing stale container(s) before first build.\n"
+      );
+      cleanWorkspace(workspace);
+      return true;
+    }
+    return false;
+  }
 
   const currentHash = computeDevcontainerHash(workspace);
   if (currentHash === savedHash) return false;
@@ -346,11 +364,7 @@ function stopContainers(workspace: string): void {
 
 function cleanWorkspace(workspace: string): void {
   // 1. Find ALL containers (running + stopped) for this workspace.
-  const containerResult = spawnSync(DOCKER, [
-    "ps", "-a", "-q",
-    "--filter", `label=devcontainer.local_folder=${workspace}`,
-  ], { encoding: "utf8" });
-  const containerIds = containerResult.stdout.trim().split("\n").filter(Boolean);
+  const containerIds = workspaceContainerIds(workspace);
 
   // Collect image IDs before removing containers (so we can remove dangling images).
   const imageResult = spawnSync(DOCKER, [

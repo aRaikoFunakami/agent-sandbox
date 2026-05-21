@@ -50,6 +50,13 @@ function containerIsRunning(workspace) {
     ], { encoding: "utf8" });
     return result.stdout.trim().length > 0;
 }
+function workspaceContainerIds(workspace) {
+    const result = (0, node_child_process_1.spawnSync)(DOCKER, [
+        "ps", "-a", "-q",
+        "--filter", `label=devcontainer.local_folder=${workspace}`,
+    ], { encoding: "utf8" });
+    return result.stdout.trim().split("\n").filter(Boolean);
+}
 function sleep(milliseconds) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
@@ -223,8 +230,15 @@ function promptConfirm(message) {
 /** Check if .devcontainer files changed and prompt for rebuild if needed. Returns true if clean was performed. */
 async function checkDevcontainerChanged(workspace) {
     const savedHash = readSavedHash(workspace);
-    if (savedHash === null)
-        return false; // First run — no baseline yet.
+    if (savedHash === null) {
+        const containerIds = workspaceContainerIds(workspace);
+        if (containerIds.length > 0) {
+            process.stderr.write("[agent-sandbox] No devcontainer state file found, removing stale container(s) before first build.\n");
+            cleanWorkspace(workspace);
+            return true;
+        }
+        return false;
+    }
     const currentHash = computeDevcontainerHash(workspace);
     if (currentHash === savedHash)
         return false;
@@ -309,11 +323,7 @@ function stopContainers(workspace) {
 }
 function cleanWorkspace(workspace) {
     // 1. Find ALL containers (running + stopped) for this workspace.
-    const containerResult = (0, node_child_process_1.spawnSync)(DOCKER, [
-        "ps", "-a", "-q",
-        "--filter", `label=devcontainer.local_folder=${workspace}`,
-    ], { encoding: "utf8" });
-    const containerIds = containerResult.stdout.trim().split("\n").filter(Boolean);
+    const containerIds = workspaceContainerIds(workspace);
     // Collect image IDs before removing containers (so we can remove dangling images).
     const imageResult = (0, node_child_process_1.spawnSync)(DOCKER, [
         "ps", "-a",
