@@ -9,7 +9,7 @@ const SUPPORTED_TARGETS = ["appium-cli", "playwright-cli"];
 const LAYER_ORDER = ["playwright-cli", "appium-cli"];
 const BASE_GITIGNORE_ADDITIONS = `
 # LLM credentials (copy llm.env.example to llm.env)
-.devcontainer/llm.env
+.agent-sandbox/llm.env
 
 # Staged host auth (temporary; auto-cleaned after container creation)
 .devcontainer/.host-auth/
@@ -194,11 +194,15 @@ function runInit(args) {
     console.log("[agent-sandbox] Created .devcontainer/");
     // Copy any layer extras (e.g. .playwright/cli.config.json).
     copyLayerExtras(target, targets);
-    // Create empty llm.env so devcontainer runArgs doesn't error.
-    const llmEnvDest = (0, node_path_1.join)(devcontainerDest, "llm.env");
+    // Create .agent-sandbox/ with llm.env and example.
+    const agentSandboxDir = (0, node_path_1.join)(target, ".agent-sandbox");
+    (0, node_fs_1.mkdirSync)(agentSandboxDir, { recursive: true });
+    const llmEnvExample = (0, node_path_1.join)(agentSandboxDir, "llm.env.example");
+    (0, node_fs_1.cpSync)((0, node_path_1.join)(TEMPLATES_DIR, "base", ".devcontainer", "llm.env.example"), llmEnvExample);
+    const llmEnvDest = (0, node_path_1.join)(agentSandboxDir, "llm.env");
     if (!(0, node_fs_1.existsSync)(llmEnvDest)) {
-        (0, node_fs_1.writeFileSync)(llmEnvDest, "# Edit this file to configure your LLM provider.\n# See llm.env.example for available options.\n");
-        console.log("[agent-sandbox] Created .devcontainer/llm.env (empty)");
+        (0, node_fs_1.writeFileSync)(llmEnvDest, "# Edit this file to configure your LLM provider.\n# See .agent-sandbox/llm.env.example for available options.\n");
+        console.log("[agent-sandbox] Created .agent-sandbox/llm.env (empty)");
     }
     updateGitignore((0, node_path_1.join)(target, ".gitignore"), gatherGitignoreAdditions(targets));
     const profile = profileName(targets);
@@ -218,7 +222,8 @@ Profile: ${profile}
 Installs: ${enabledList}
 
 Next steps:
-  1. Edit .devcontainer/llm.env  (see llm.env.example for options)
+  1. Edit .agent-sandbox/llm.env  (see .agent-sandbox/llm.env.example for options)
+     Or create ~/.agent-sandbox/llm.env for shared config across all projects.
   2. Run:  agent-sandbox copilot --version
            agent-sandbox claude --version
 ${extraCommands.join("\n")}

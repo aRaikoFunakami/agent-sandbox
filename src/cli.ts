@@ -427,9 +427,16 @@ function distcleanWorkspace(workspace: string): void {
 
 
 function execInContainer(workspace: string, command: string[]): number {
+  // Source host-level llm.env (bind-mounted) before running the command,
+  // so dynamic edits to ~/.agent-sandbox/llm.env are reflected each exec.
+  const wrappedCommand = [
+    "bash", "-c",
+    `set -a; [ -f /run/host-llm.env ] && . /run/host-llm.env; set +a; exec "$@"`,
+    "--", ...command,
+  ];
   const result = spawnSync(
     getDevcontainer(),
-    ["exec", "--workspace-folder", workspace, ...command],
+    ["exec", "--workspace-folder", workspace, ...wrappedCommand],
     { stdio: "inherit" }
   );
   return result.status ?? 1;

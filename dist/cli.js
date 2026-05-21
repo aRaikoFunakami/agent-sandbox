@@ -373,7 +373,14 @@ function distcleanWorkspace(workspace) {
     process.stdout.write("[agent-sandbox] Distclean complete.\n");
 }
 function execInContainer(workspace, command) {
-    const result = (0, node_child_process_1.spawnSync)(getDevcontainer(), ["exec", "--workspace-folder", workspace, ...command], { stdio: "inherit" });
+    // Source host-level llm.env (bind-mounted) before running the command,
+    // so dynamic edits to ~/.agent-sandbox/llm.env are reflected each exec.
+    const wrappedCommand = [
+        "bash", "-c",
+        `set -a; [ -f /run/host-llm.env ] && . /run/host-llm.env; set +a; exec "$@"`,
+        "--", ...command,
+    ];
+    const result = (0, node_child_process_1.spawnSync)(getDevcontainer(), ["exec", "--workspace-folder", workspace, ...wrappedCommand], { stdio: "inherit" });
     return result.status ?? 1;
 }
 function printUsage() {

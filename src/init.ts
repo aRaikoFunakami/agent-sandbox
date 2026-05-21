@@ -11,7 +11,7 @@ const LAYER_ORDER: InstallTarget[] = ["playwright-cli", "appium-cli"];
 
 const BASE_GITIGNORE_ADDITIONS = `
 # LLM credentials (copy llm.env.example to llm.env)
-.devcontainer/llm.env
+.agent-sandbox/llm.env
 
 # Staged host auth (temporary; auto-cleaned after container creation)
 .devcontainer/.host-auth/
@@ -242,14 +242,20 @@ export function runInit(args: string[]): void {
   // Copy any layer extras (e.g. .playwright/cli.config.json).
   copyLayerExtras(target, targets);
 
-  // Create empty llm.env so devcontainer runArgs doesn't error.
-  const llmEnvDest = join(devcontainerDest, "llm.env");
+  // Create .agent-sandbox/ with llm.env and example.
+  const agentSandboxDir = join(target, ".agent-sandbox");
+  mkdirSync(agentSandboxDir, { recursive: true });
+
+  const llmEnvExample = join(agentSandboxDir, "llm.env.example");
+  cpSync(join(TEMPLATES_DIR, "base", ".devcontainer", "llm.env.example"), llmEnvExample);
+
+  const llmEnvDest = join(agentSandboxDir, "llm.env");
   if (!existsSync(llmEnvDest)) {
     writeFileSync(
       llmEnvDest,
-      "# Edit this file to configure your LLM provider.\n# See llm.env.example for available options.\n"
+      "# Edit this file to configure your LLM provider.\n# See .agent-sandbox/llm.env.example for available options.\n"
     );
-    console.log("[agent-sandbox] Created .devcontainer/llm.env (empty)");
+    console.log("[agent-sandbox] Created .agent-sandbox/llm.env (empty)");
   }
 
   updateGitignore(join(target, ".gitignore"), gatherGitignoreAdditions(targets));
@@ -272,7 +278,8 @@ Profile: ${profile}
 Installs: ${enabledList}
 
 Next steps:
-  1. Edit .devcontainer/llm.env  (see llm.env.example for options)
+  1. Edit .agent-sandbox/llm.env  (see .agent-sandbox/llm.env.example for options)
+     Or create ~/.agent-sandbox/llm.env for shared config across all projects.
   2. Run:  agent-sandbox copilot --version
            agent-sandbox claude --version
 ${extraCommands.join("\n")}
