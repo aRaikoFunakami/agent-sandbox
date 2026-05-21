@@ -6,16 +6,20 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
+  readdirSync,
   realpathSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { createInterface } from "node:readline";
+import { resolve, dirname, join, relative } from "node:path";
 import { which } from "./which";
 import { runInit } from "./init";
 
@@ -142,6 +146,91 @@ function stableCacheTag(workspace: string): string {
   return "agent-sandbox-devcontainer:base";
 }
 
+// --- .devcontainer change detection ---
+
+const STATE_FILE = ".agent-sandbox-state.json";
+
+/** Recursively collect all files under a directory (excluding the state file and lock). */
+function collectFiles(dir: string, base: string): string[] {
+  const entries: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.name === STATE_FILE) continue;
+    if (entry.name === ".agent-sandbox-up.lock") continue;
+    if (entry.isDirectory()) {
+      entries.push(...collectFiles(full, base));
+    } else if (entry.isFile()) {
+      entries.push(relative(base, full));
+    }
+  }
+  return entries.sort();
+}
+
+/** Compute a combined hash of all files under .devcontainer/. */
+function computeDevcontainerHash(workspace: string): string {
+  const devcontainerDir = join(workspace, ".devcontainer");
+  const files = collectFiles(devcontainerDir, devcontainerDir);
+  const hash = createHash("sha256");
+  for (const file of files) {
+    hash.update(file);
+    hash.update(readFileSync(join(devcontainerDir, file)));
+  }
+  return hash.digest("hex");
+}
+
+/** Read the saved state hash, or null if not recorded yet. */
+function readSavedHash(workspace: string): string | null {
+  const stateFile = join(workspace, ".devcontainer", STATE_FILE);
+  if (!existsSync(stateFile)) return null;
+  try {
+    const data = JSON.parse(readFileSync(stateFile, "utf8"));
+    return typeof data.hash === "string" ? data.hash : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Save the current devcontainer hash. */
+function saveDevcontainerHash(workspace: string): void {
+  const stateFile = join(workspace, ".devcontainer", STATE_FILE);
+  const hash = computeDevcontainerHash(workspace);
+  writeFileSync(stateFile, JSON.stringify({ hash, updatedAt: new Date().toISOString() }) + "\n");
+}
+
+/** Prompt the user with a yes/no question. Returns true if confirmed. */
+function promptConfirm(message: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve) => {
+    rl.question(message, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
+    });
+  });
+}
+
+/** Check if .devcontainer files changed and prompt for rebuild if needed. Returns true if clean was performed. */
+async function checkDevcontainerChanged(workspace: string): Promise<boolean> {
+  const savedHash = readSavedHash(workspace);
+  if (savedHash === null) return false; // First run — no baseline yet.
+
+  const currentHash = computeDevcontainerHash(workspace);
+  if (currentHash === savedHash) return false;
+
+  process.stderr.write(
+    "[agent-sandbox] Detected changes in .devcontainer/ since last build.\n"
+  );
+  const confirmed = await promptConfirm(
+    "[agent-sandbox] Clean and rebuild the container? [y/N]: "
+  );
+  if (confirmed) {
+    cleanWorkspace(workspace);
+    return true;
+  }
+  // User declined — update saved hash so we don't ask again for the same changes.
+  saveDevcontainerHash(workspace);
+  return false;
+}
+
 function runningContainerImage(workspace: string): string | null {
   const result = spawnSync(DOCKER, [
     "ps",
@@ -175,6 +264,7 @@ function ensureContainer(workspace: string): void {
       stdio: "inherit",
     });
     tagStableCacheImage(workspace);
+    saveDevcontainerHash(workspace);
   } finally {
     releaseLock();
   }
@@ -312,7 +402,7 @@ function printUsage(): void {
   );
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
   let workspaceOverride: string | null = null;
@@ -376,6 +466,7 @@ function main(): void {
 
   try {
     const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+    await checkDevcontainerChanged(workspace);
     ensureContainer(workspace);
     process.exit(execInContainer(workspace, filtered));
   } catch (err) {
