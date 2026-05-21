@@ -281,7 +281,7 @@ function ensureContainer(workspace, options) {
         process.stderr.write(`[agent-sandbox] Container not running, starting devcontainer at ${workspace} …\n`);
         const args = ["up", "--workspace-folder", workspace];
         if (options?.noCache) {
-            args.push("--no-cache");
+            args.push("--build-no-cache");
         }
         (0, node_child_process_1.execFileSync)(getDevcontainer(), args, {
             stdio: "inherit",

@@ -316,7 +316,7 @@ function ensureContainer(workspace: string, options?: { noCache?: boolean }): vo
     );
     const args = ["up", "--workspace-folder", workspace];
     if (options?.noCache) {
-      args.push("--no-cache");
+      args.push("--build-no-cache");
     }
     execFileSync(getDevcontainer(), args, {
       stdio: "inherit",
