@@ -69,8 +69,8 @@ agent-sandbox init --force                                  # 既存の設定を
 ```bash
 # サーバー URL の参照・設定（COPILOT_PROVIDER_TYPE=openai も同時に設定されます）
 agent-sandbox url
-agent-sandbox url http://10.5.104.141:8000/v1
-agent-sandbox url http://10.5.104.141:8000/v1 --global
+agent-sandbox url http://llm.example.com:8000/v1
+agent-sandbox url http://llm.example.com:8000/v1 --global
 
 # モデル名の参照・設定
 agent-sandbox model
@@ -79,7 +79,7 @@ agent-sandbox model Qwen3.5-9B-bf16 --global
 
 # 設定済み URL に対して OpenAI 互換の /models を問い合わせ
 agent-sandbox models
-agent-sandbox models --url http://10.5.104.141:8000/v1   # 一時的に別の URL を確認
+agent-sandbox models --url http://llm.example.com:8000/v1   # 一時的に別の URL を確認
 ```
 
 `models` の出力では、現在 `COPILOT_MODEL` に設定されているモデル ID の行頭に `*` が付きます。`agent-sandbox status` は Docker のコンテナ状態に加えて、現在有効な `COPILOT_PROVIDER_BASE_URL` / `COPILOT_PROVIDER_TYPE` / `COPILOT_MODEL` と、その値がどのファイル（ホスト・プロジェクト・プロセス環境）由来かを表示します。

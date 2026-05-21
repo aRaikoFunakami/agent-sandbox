@@ -697,11 +697,11 @@ function printUsage() {
         "  agent-sandbox stop\n" +
         "  agent-sandbox distclean\n" +
         "  agent-sandbox rebuild\n" +
-        "  agent-sandbox url http://10.5.104.141:8000/v1\n" +
-        "  agent-sandbox url http://10.5.104.141:8000/v1 --global\n" +
+        "  agent-sandbox url http://llm.example.com:8000/v1\n" +
+        "  agent-sandbox url http://llm.example.com:8000/v1 --global\n" +
         "  agent-sandbox model Qwen3.5-9B-bf16\n" +
         "  agent-sandbox models\n" +
-        "  agent-sandbox models --url http://10.5.104.141:8000/v1\n" +
+        "  agent-sandbox models --url http://llm.example.com:8000/v1\n" +
         "  agent-sandbox copilot --allow-all -p 'fix all failing tests'\n" +
         "  agent-sandbox claude --dangerously-skip-permissions -p 'run tests'\n" +
         "  agent-sandbox -w /path/to/project copilot -p 'review code'\n");
