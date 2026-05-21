@@ -285,7 +285,7 @@ function tagStableCacheImage(workspace: string): void {
 }
 
 /** Start the devcontainer if it is not already running. */
-function ensureContainer(workspace: string): void {
+function ensureContainer(workspace: string, options?: { noCache?: boolean }): void {
   if (containerIsRunning(workspace)) return;
 
   const releaseLock = acquireWorkspaceLock(workspace);
@@ -294,7 +294,11 @@ function ensureContainer(workspace: string): void {
     process.stderr.write(
       `[agent-sandbox] Container not running, starting devcontainer at ${workspace} …\n`
     );
-    execFileSync(getDevcontainer(), ["up", "--workspace-folder", workspace], {
+    const args = ["up", "--workspace-folder", workspace];
+    if (options?.noCache) {
+      args.push("--no-cache");
+    }
+    execFileSync(getDevcontainer(), args, {
       stdio: "inherit",
     });
     tagStableCacheImage(workspace);
@@ -552,7 +556,7 @@ async function main(): Promise<void> {
       const workspace = workspaceOverride ?? findWorkspace(process.cwd());
       distcleanWorkspace(workspace);
       process.stderr.write("[agent-sandbox] Rebuilding devcontainer from scratch …\n");
-      ensureContainer(workspace);
+      ensureContainer(workspace, { noCache: true });
       process.stdout.write("[agent-sandbox] Rebuild complete.\n");
     } catch (err) {
       process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
