@@ -12,6 +12,7 @@ ENV JAVA_HOME=/opt/java-17
 ENV APPIUM_HOME=/opt/appium
 ENV UV_TOOL_DIR=/opt/uv-tools
 ENV UV_TOOL_BIN_DIR=/usr/local/bin
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 ENV PATH="${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/cmdline-tools/latest/bin:${PATH}"
 
 # uv binary (multi-arch image)
@@ -45,7 +46,7 @@ RUN set -eux; \
     fi; \
     \
     # Android command-line tools + platform-tools
-    mkdir -p "${ANDROID_HOME}/cmdline-tools" "${APPIUM_HOME}" "${UV_TOOL_DIR}"; \
+    mkdir -p "${ANDROID_HOME}/cmdline-tools" "${APPIUM_HOME}" "${UV_TOOL_DIR}" "${UV_PYTHON_INSTALL_DIR}"; \
     curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
       -o /tmp/cmdline-tools.zip; \
     unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools; \
@@ -69,7 +70,7 @@ RUN set -eux; \
       "git+https://github.com/aRaikoFunakami/appium-cli.git@${APPIUM_CLI_REF}"; \
     \
     # Make all shared dirs writable by both 'vscode' and 'ubuntu' users
-    chmod -R a+rwx "${APPIUM_HOME}" "${UV_TOOL_DIR}" "${ANDROID_HOME}"; \
+    chmod -R a+rwx "${APPIUM_HOME}" "${UV_TOOL_DIR}" "${UV_PYTHON_INSTALL_DIR}" "${ANDROID_HOME}"; \
     \
     # Cleanup
     npm cache clean --force; \

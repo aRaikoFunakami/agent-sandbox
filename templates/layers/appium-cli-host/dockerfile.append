@@ -8,6 +8,7 @@ ARG APPIUM_CLI_REF=main
 
 ENV UV_TOOL_DIR=/opt/uv-tools
 ENV UV_TOOL_BIN_DIR=/usr/local/bin
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
 # uv binary (multi-arch image)
 COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /usr/local/bin/
@@ -19,13 +20,13 @@ RUN set -eux; \
       curl \
       git; \
     \
-    mkdir -p "${UV_TOOL_DIR}"; \
+    mkdir -p "${UV_TOOL_DIR}" "${UV_PYTHON_INSTALL_DIR}"; \
     \
     # appium-cli from GitHub via uv
     uv tool install --python 3.12 --force \
       "git+https://github.com/aRaikoFunakami/appium-cli.git@${APPIUM_CLI_REF}"; \
     \
-    # Make uv tool dir writable by both 'vscode' and 'ubuntu' users
-    chmod -R a+rwx "${UV_TOOL_DIR}"; \
+    # Make uv dirs writable by both 'vscode' and 'ubuntu' users
+    chmod -R a+rwx "${UV_TOOL_DIR}" "${UV_PYTHON_INSTALL_DIR}"; \
     \
     rm -rf /var/lib/apt/lists/*
