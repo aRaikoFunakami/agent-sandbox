@@ -34,7 +34,8 @@ function findWorkspace(start) {
         }
         const parent = (0, node_path_1.dirname)(current);
         if (parent === current) {
-            throw new Error(`error: could not find a .devcontainer/ directory in ${start} or any parent directory.`);
+            throw new Error(`error: could not find a .devcontainer/ directory in ${start} or any parent directory.\n` +
+                `Run 'agent-sandbox init' first to set up the devcontainer configuration.`);
         }
         current = parent;
     }
