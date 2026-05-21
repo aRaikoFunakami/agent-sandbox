@@ -51,6 +51,39 @@ function containerIsRunning(workspace) {
 function sleep(milliseconds) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
+/**
+ * Spawn a detached watchdog process that monitors our PID.
+ * If this process disappears (e.g. SIGKILL), the watchdog stops the container.
+ * Returns the watchdog PID so it can be killed on normal exit.
+ */
+function spawnWatchdog(workspace) {
+    const parentPid = process.pid;
+    // Inline Node.js script that polls whether the parent is still alive.
+    const script = `
+    const { spawnSync } = require("child_process");
+    const pid = ${parentPid};
+    const workspace = ${JSON.stringify(workspace)};
+    const docker = ${JSON.stringify(DOCKER)};
+    const interval = setInterval(() => {
+      try { process.kill(pid, 0); } catch {
+        // Parent is gone — stop the container.
+        const r = spawnSync(docker, [
+          "ps", "-q", "--filter", "label=devcontainer.local_folder=" + workspace
+        ], { encoding: "utf8" });
+        const ids = r.stdout.trim().split("\\n").filter(Boolean);
+        if (ids.length > 0) spawnSync(docker, ["stop", ...ids]);
+        clearInterval(interval);
+        process.exit(0);
+      }
+    }, 2000);
+  `;
+    const child = (0, node_child_process_1.spawn)(process.execPath, ["-e", script], {
+        detached: true,
+        stdio: "ignore",
+    });
+    child.unref();
+    return child.pid;
+}
 function lockOwnerIsAlive(lockDir) {
     try {
         const pid = Number((0, node_fs_1.readFileSync)((0, node_path_1.join)(lockDir, "owner"), "utf8").split("\n")[0]);
@@ -410,8 +443,40 @@ async function main() {
     try {
         const workspace = workspaceOverride ?? findWorkspace(process.cwd());
         await checkDevcontainerChanged(workspace);
+        // Stop orphaned container from a previous run (e.g. after SIGKILL).
+        if (containerIsRunning(workspace)) {
+            process.stderr.write("[agent-sandbox] Stopping orphaned container from previous run …\n");
+            stopContainers(workspace);
+        }
         ensureContainer(workspace);
-        process.exit(execInContainer(workspace, filtered));
+        // Watchdog: if this process is killed (e.g. SIGKILL), the detached
+        // watchdog will detect parent death and stop the container.
+        const watchdogPid = spawnWatchdog(workspace);
+        // Register cleanup to stop the container on exit or signal.
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned)
+                return;
+            cleaned = true;
+            // Kill the watchdog — no longer needed on graceful exit.
+            if (watchdogPid) {
+                try {
+                    process.kill(watchdogPid);
+                }
+                catch { /* already gone */ }
+            }
+            try {
+                stopContainers(workspace);
+            }
+            catch {
+                // Best-effort cleanup; ignore errors.
+            }
+        };
+        process.on("SIGINT", () => { cleanup(); process.exit(130); });
+        process.on("SIGTERM", () => { cleanup(); process.exit(143); });
+        const exitCode = execInContainer(workspace, filtered);
+        cleanup();
+        process.exit(exitCode);
     }
     catch (err) {
         process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
