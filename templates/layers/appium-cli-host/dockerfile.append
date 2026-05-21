@@ -1,8 +1,9 @@
 # ---- appium-cli (host-Appium) layer ----
 # In host-Appium mode, Appium runs on the macOS host and ChromeDriver is
 # resolved by the host (where mac-arm64 ChromeDriver is available).
-# The container only needs `appium-cli` itself; it does NOT need Appium,
-# uiautomator2 driver, Android SDK, or platform-tools.
+# The container only needs `appium-cli` itself plus `adb` (to list devices
+# and pass udid to the host Appium); it does NOT need Appium server,
+# uiautomator2 driver, or Android SDK cmdline-tools.
 ARG DEBIAN_FRONTEND=noninteractive
 ARG APPIUM_CLI_REF=main
 
@@ -18,7 +19,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
-      git; \
+      git \
+      adb; \
     \
     mkdir -p "${UV_TOOL_DIR}" "${UV_PYTHON_INSTALL_DIR}"; \
     \
