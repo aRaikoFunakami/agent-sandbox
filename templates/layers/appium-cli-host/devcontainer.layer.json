@@ -1,0 +1,6 @@
+{
+  "runArgs": ["--add-host=host.docker.internal:host-gateway"],
+  "containerEnv": {
+    "APPIUM_SERVER_URL": "http://host.docker.internal:4723"
+  }
+}

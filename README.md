@@ -181,6 +181,107 @@ Linux ホストで USB デバイスを直接コンテナに渡したい場合は
 
 macOS では Docker Desktop の制約により USB pass-through は使えないため、必ず既定の TCP モードを使用してください。
 
+## Apple Silicon macOS + Chrome / WebView 自動化 (host Appium モード)
+
+Apple Silicon Mac でこの devcontainer から **Android Chrome / WebView** を自動操作する場合、Appium は **macOS ホスト側で実行する必要があります**。
+
+### なぜホスト側 Appium が必要か
+
+- devcontainer は Linux arm64 (aarch64) として動きます。
+- Appium の `uiautomator2` driver は WebView を操作するとき、Appium と同じマシン上で動く **ChromeDriver バイナリ** を必要とします。
+- Chrome for Testing が公開している ChromeDriver は `linux64` (x86_64 Linux) と `mac-arm64` (Apple Silicon macOS) のみで、**`linux-arm64` ChromeDriver は存在しません**。
+- そのため Appium がコンテナ内で動くと、Chromedriver autodownload は `linux64` を選んでしまい、arm64 Linux 上では実行できません (`mac-arm64` も Linux 上では Mach-O のため動きません)。
+- native Android (uiautomator2) の操作は arm64 Linux コンテナでも動きますが、WebView コンテキスト切り替えや `web_snapshot` だけが失敗します。
+- 解決策は Appium を **macOS ホスト側** で動かし、コンテナの `appium-cli` から `host.docker.internal:4723` 経由で接続することです。host 側なら `mac-arm64` ChromeDriver が自然に解決されます。
+
+### 既定モード: `--appium-server=host` (macOS 既定)
+
+`agent-sandbox init --install=appium-cli` は macOS 上では **デフォルトで host モード** を生成します:
+
+```bash
+agent-sandbox init --install=appium-cli                       # macOS では暗黙的に host
+agent-sandbox init --install=appium-cli --appium-server=host
+```
+
+host モードの生成物の差分:
+
+- `.devcontainer/Dockerfile` から **Appium / uiautomator2 / Android SDK / Java の重いインストールを除外** (`adb` と `appium-cli` のみ残る)。
+- `containerEnv.APPIUM_SERVER_URL=http://host.docker.internal:4723` が設定され、`appium-cli session start` が自動的にホスト側 Appium に接続します。
+- イメージタグは `agent-sandbox-devcontainer:appium-cli-host` (container モードの `agent-sandbox-devcontainer:appium-cli` とは別キャッシュ)。
+
+逆に native Android のみ操作したい場合や Linux ホストでは `--appium-server=container` で従来通りのフル Appium 入りイメージが生成されます。
+
+### ホスト前提条件 (ユーザーが事前に用意)
+
+`agent-sandbox` は **ホスト側に Appium / Node をインストールしません**。次のものを Mac 側に揃えてください:
+
+| 要件 | コマンド例 |
+|------|-----------|
+| Node.js ≥ 20 | `brew install node` |
+| Appium 3.x | `npm install -g appium` |
+| uiautomator2 driver | `appium driver install uiautomator2` |
+| Android platform-tools (`adb`) | `brew install --cask android-platform-tools` |
+| ADB を有効化した Android デバイス | デバイス開発者オプションで USB デバッグ有効 |
+| 対象デバイスに Chrome がインストール済み | Google Play から |
+
+### ホスト Appium のライフサイクル
+
+```bash
+# ホスト側 Appium を起動 (4723 番、リッスン中なら再利用)
+agent-sandbox appium host start
+
+# 状態確認
+agent-sandbox appium host status            # human-readable
+agent-sandbox appium host status --json     # ownership / pid / port / url
+
+# ログ (デフォルト末尾 200 行、`-f` でフォロー)
+agent-sandbox appium host log
+agent-sandbox appium host log -f
+
+# 自分が起動したものだけ停止 (external は停止しない)
+agent-sandbox appium host stop
+```
+
+- `start` は最初に `http://127.0.0.1:4723/status` を probe し、既に応答する Appium があれば **external として再利用** します (agent-sandbox は停止しません)。
+- 応答する Appium がなく自分で起動する場合は厳格なプリチェックを行います: `appium` が PATH にあり、`appium driver list --installed` に `uiautomator2` が含まれ、`adb` が PATH にある必要があります。1つでも欠けると終了コード 1 で失敗します。
+- 起動した Appium は `detached` で動き、状態は `~/.agent-sandbox/appium-host/state.json`、ログは `~/.agent-sandbox/appium-host/appium.log` に保存されます。
+- `stop` は **自分で起動した PID にのみ SIGTERM** を送ります。external Appium を停止することはありません。
+
+### 自動起動はしません
+
+`agent-sandbox appium-cli ...` は host Appium を暗黙起動しません。host/container の境界をユーザーが明示的に意識できるように、`appium host start` は必ず手動で呼んでください。
+
+### 典型的なエンドツーエンド手順
+
+```bash
+# 1. ホスト (Mac) で
+agent-sandbox appium host start
+
+# 2. ワークスペース初回セットアップ
+cd your-project
+agent-sandbox init --install=appium-cli         # macOS では host モード既定
+
+# 3. コンテナ内で (APPIUM_SERVER_URL は containerEnv 経由で自動設定)
+agent-sandbox appium-cli devices --platform android
+agent-sandbox appium-cli session start          # ホスト Appium に接続
+agent-sandbox appium-cli activate_app com.android.chrome
+agent-sandbox appium-cli web_eval 'location.href="https://www.yahoo.co.jp"'
+agent-sandbox appium-cli webview_title
+
+# 4. 後片付け
+agent-sandbox appium-cli session stop
+agent-sandbox appium host stop
+```
+
+### 既存ワークスペースのマイグレーション
+
+container モードで生成済みのワークスペースを host モードに切り替えるには:
+
+```bash
+agent-sandbox init --force --install=appium-cli --appium-server=host
+agent-sandbox rebuild    # 古い appium-cli イメージを使い続けないように
+```
+
 ## 動作
 
 1. カレントディレクトリから上方向に `.devcontainer/` ディレクトリを探す

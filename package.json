@@ -6,7 +6,8 @@
     "agent-sandbox": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "node --test tests/"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

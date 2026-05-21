@@ -7,6 +7,18 @@ const TEMPLATES_DIR = join(__dirname, "..", "templates");
 const SUPPORTED_TARGETS = ["appium-cli", "playwright-cli"] as const;
 type InstallTarget = typeof SUPPORTED_TARGETS[number];
 
+type AppiumServerMode = "host" | "container";
+
+interface BuildOptions {
+  appiumServer: AppiumServerMode;
+}
+
+interface LayerSelection {
+  target: InstallTarget;
+  layerDir: string;   // physical directory under templates/layers/
+  profileKey: string; // identifier used in profile/cache tag
+}
+
 // Layer application order: playwright first so its FROM wins, appium appended on top.
 const LAYER_ORDER: InstallTarget[] = ["playwright-cli", "appium-cli"];
 
@@ -42,6 +54,43 @@ interface LayerJson {
   mounts?: string[];
 }
 
+function defaultAppiumServerMode(): AppiumServerMode {
+  // Apple Silicon / macOS lacks linux-arm64 ChromeDriver builds, so default to
+  // host-Appium for the WebView path. Linux hosts default to container mode.
+  return process.platform === "darwin" ? "host" : "container";
+}
+
+function parseAppiumServerMode(args: string[]): AppiumServerMode {
+  let mode: AppiumServerMode = defaultAppiumServerMode();
+  for (const arg of args) {
+    if (!arg.startsWith("--appium-server=")) continue;
+    const value = arg.slice("--appium-server=".length).trim();
+    if (value !== "host" && value !== "container") {
+      console.error(
+        `[agent-sandbox] unsupported --appium-server value: ${value}\n` +
+        `Supported values: host, container`
+      );
+      process.exit(1);
+    }
+    mode = value;
+  }
+  return mode;
+}
+
+function layerDirFor(target: InstallTarget, opts: BuildOptions): string {
+  if (target === "appium-cli" && opts.appiumServer === "host") {
+    return "appium-cli-host";
+  }
+  return target;
+}
+
+function profileKeyFor(target: InstallTarget, opts: BuildOptions): string {
+  // profileKey appears in the agent-sandbox-devcontainer cache tag and the
+  // agent-sandbox-installs marker, so host vs container Appium produce
+  // distinct images even when targets and Dockerfile FROM are the same.
+  return layerDirFor(target, opts);
+}
+
 function parseInstallTargets(args: string[]): Set<InstallTarget> {
   const targets = new Set<InstallTarget>();
   const unsupported: string[] = [];
@@ -69,13 +118,20 @@ function parseInstallTargets(args: string[]): Set<InstallTarget> {
   return targets;
 }
 
-function selectedLayers(targets: Set<InstallTarget>): InstallTarget[] {
-  return LAYER_ORDER.filter((t) => targets.has(t));
+function selectedLayers(targets: Set<InstallTarget>, opts: BuildOptions): LayerSelection[] {
+  return LAYER_ORDER.filter((t) => targets.has(t)).map((t) => ({
+    target: t,
+    layerDir: layerDirFor(t, opts),
+    profileKey: profileKeyFor(t, opts),
+  }));
 }
 
-function profileName(targets: Set<InstallTarget>): string {
+function profileName(targets: Set<InstallTarget>, opts: BuildOptions): string {
   if (targets.size === 0) return "base";
-  return Array.from(targets).sort().join("--");
+  return selectedLayers(targets, opts)
+    .map((l) => l.profileKey)
+    .sort()
+    .join("--");
 }
 
 function displayName(targets: Set<InstallTarget>): string {
@@ -92,8 +148,8 @@ function buildPostCreateCommand(targets: Set<InstallTarget>): string {
   return parts.join(" && ");
 }
 
-function generateDockerfile(targets: Set<InstallTarget>): string {
-  const layers = selectedLayers(targets);
+function generateDockerfile(targets: Set<InstallTarget>, opts: BuildOptions): string {
+  const layers = selectedLayers(targets, opts);
   const baseDockerfile = readFileSync(
     join(TEMPLATES_DIR, "base", ".devcontainer", "Dockerfile"),
     "utf8"
@@ -102,7 +158,7 @@ function generateDockerfile(targets: Set<InstallTarget>): string {
   // Replace the first FROM line if any layer provides a dockerfile.from.
   let dockerfile = baseDockerfile;
   for (const layer of layers) {
-    const fromPath = join(TEMPLATES_DIR, "layers", layer, "dockerfile.from");
+    const fromPath = join(TEMPLATES_DIR, "layers", layer.layerDir, "dockerfile.from");
     if (existsSync(fromPath)) {
       const newFrom = readFileSync(fromPath, "utf8").trim();
       dockerfile = dockerfile.replace(/^FROM\s+.+$/m, newFrom);
@@ -111,13 +167,14 @@ function generateDockerfile(targets: Set<InstallTarget>): string {
   }
 
   // Insert install marker after the first FROM line.
-  const marker = `# agent-sandbox-installs: ${Array.from(targets).sort().join(",")}`;
+  const markerKeys = layers.map((l) => l.profileKey).sort().join(",");
+  const marker = `# agent-sandbox-installs: ${markerKeys}`;
   dockerfile = dockerfile.replace(/^(FROM\s+.+)$/m, `$1\n${marker}`);
 
   // Append each selected layer's dockerfile.append in layer order.
   const appended: string[] = [];
   for (const layer of layers) {
-    const appendPath = join(TEMPLATES_DIR, "layers", layer, "dockerfile.append");
+    const appendPath = join(TEMPLATES_DIR, "layers", layer.layerDir, "dockerfile.append");
     if (existsSync(appendPath)) {
       appended.push(readFileSync(appendPath, "utf8").trimEnd());
     }
@@ -134,7 +191,7 @@ function dedupePush<T>(target: T[], items: T[] | undefined): void {
   }
 }
 
-function mergeDevcontainerJson(targets: Set<InstallTarget>): DevcontainerJson {
+function mergeDevcontainerJson(targets: Set<InstallTarget>, opts: BuildOptions): DevcontainerJson {
   const base: DevcontainerJson = JSON.parse(
     readFileSync(join(TEMPLATES_DIR, "base", ".devcontainer", "devcontainer.json"), "utf8")
   );
@@ -144,8 +201,8 @@ function mergeDevcontainerJson(targets: Set<InstallTarget>): DevcontainerJson {
   merged.containerEnv = { ...(base.containerEnv ?? {}) };
   merged.mounts = base.mounts ? [...base.mounts] : [];
 
-  for (const layer of selectedLayers(targets)) {
-    const layerPath = join(TEMPLATES_DIR, "layers", layer, "devcontainer.layer.json");
+  for (const layer of selectedLayers(targets, opts)) {
+    const layerPath = join(TEMPLATES_DIR, "layers", layer.layerDir, "devcontainer.layer.json");
     if (!existsSync(layerPath)) continue;
     const layerJson: LayerJson = JSON.parse(readFileSync(layerPath, "utf8"));
     dedupePush(merged.runArgs!, layerJson.runArgs);
@@ -166,26 +223,26 @@ function mergeDevcontainerJson(targets: Set<InstallTarget>): DevcontainerJson {
   merged.name = displayName(targets);
   merged.build = {
     dockerfile: "Dockerfile",
-    cacheFrom: [`agent-sandbox-devcontainer:${profileName(targets)}`],
+    cacheFrom: [`agent-sandbox-devcontainer:${profileName(targets, opts)}`],
   };
   merged.postCreateCommand = buildPostCreateCommand(targets);
 
   return merged;
 }
 
-function copyLayerExtras(target: string, targets: Set<InstallTarget>): void {
-  for (const layer of selectedLayers(targets)) {
-    const extrasDir = join(TEMPLATES_DIR, "layers", layer, "extras");
+function copyLayerExtras(target: string, targets: Set<InstallTarget>, opts: BuildOptions): void {
+  for (const layer of selectedLayers(targets, opts)) {
+    const extrasDir = join(TEMPLATES_DIR, "layers", layer.layerDir, "extras");
     if (!existsSync(extrasDir)) continue;
     cpSync(extrasDir, target, { recursive: true });
-    console.log(`[agent-sandbox] Copied extras from layer: ${layer}`);
+    console.log(`[agent-sandbox] Copied extras from layer: ${layer.layerDir}`);
   }
 }
 
-function gatherGitignoreAdditions(targets: Set<InstallTarget>): string {
+function gatherGitignoreAdditions(targets: Set<InstallTarget>, opts: BuildOptions): string {
   let text = BASE_GITIGNORE_ADDITIONS;
-  for (const layer of selectedLayers(targets)) {
-    const gi = join(TEMPLATES_DIR, "layers", layer, "gitignore.txt");
+  for (const layer of selectedLayers(targets, opts)) {
+    const gi = join(TEMPLATES_DIR, "layers", layer.layerDir, "gitignore.txt");
     if (existsSync(gi)) {
       text += "\n" + readFileSync(gi, "utf8");
     }
@@ -228,6 +285,7 @@ function createLlmEnvSet(dir: string, label: string): void {
 export function runInit(args: string[]): void {
   const force = args.includes("--force") || args.includes("-f");
   const targets = parseInstallTargets(args);
+  const opts: BuildOptions = { appiumServer: parseAppiumServerMode(args) };
 
   const target = resolve(process.cwd());
   const devcontainerDest = join(target, ".devcontainer");
@@ -249,23 +307,25 @@ export function runInit(args: string[]): void {
   cpSync(join(TEMPLATES_DIR, "base", ".devcontainer"), devcontainerDest, { recursive: true });
 
   // Overwrite generated Dockerfile and devcontainer.json with merged versions.
-  writeFileSync(join(devcontainerDest, "Dockerfile"), generateDockerfile(targets));
+  writeFileSync(join(devcontainerDest, "Dockerfile"), generateDockerfile(targets, opts));
   writeFileSync(
     join(devcontainerDest, "devcontainer.json"),
-    JSON.stringify(mergeDevcontainerJson(targets), null, 2) + "\n"
+    JSON.stringify(mergeDevcontainerJson(targets, opts), null, 2) + "\n"
   );
   console.log("[agent-sandbox] Created .devcontainer/");
 
   // Copy any layer extras (e.g. .playwright/cli.config.json).
-  copyLayerExtras(target, targets);
+  copyLayerExtras(target, targets, opts);
 
   createLlmEnvSet(join(homedir(), ".agent-sandbox"), "~/.agent-sandbox");
   createLlmEnvSet(join(target, ".agent-sandbox"), ".agent-sandbox");
 
-  updateGitignore(join(target, ".gitignore"), gatherGitignoreAdditions(targets));
+  updateGitignore(join(target, ".gitignore"), gatherGitignoreAdditions(targets, opts));
 
-  const profile = profileName(targets);
-  const enabledList = targets.size === 0 ? "(none)" : Array.from(targets).sort().join(", ");
+  const profile = profileName(targets, opts);
+  const enabledList = targets.size === 0
+    ? "(none)"
+    : selectedLayers(targets, opts).map((l) => l.profileKey).sort().join(", ");
   const extraCommands: string[] = [];
   if (targets.has("playwright-cli")) {
     extraCommands.push("           agent-sandbox playwright-cli open https://example.com");
@@ -273,6 +333,10 @@ export function runInit(args: string[]): void {
   if (targets.has("appium-cli")) {
     extraCommands.push("           agent-sandbox appium-cli doctor");
     extraCommands.push("           agent-sandbox appium-cli devices --platform android");
+    if (opts.appiumServer === "host") {
+      extraCommands.push("           # host Appium required (run on the macOS host first):");
+      extraCommands.push("           agent-sandbox appium host start");
+    }
   }
 
   console.log(`
@@ -280,7 +344,7 @@ export function runInit(args: string[]): void {
 
 Profile: ${profile}
 Installs: ${enabledList}
-
+${targets.has("appium-cli") ? `Appium server mode: ${opts.appiumServer}\n` : ""}
 Next steps:
   1. Edit ~/.agent-sandbox/llm.env for shared defaults.
      Edit .agent-sandbox/llm.env for project-specific overrides.

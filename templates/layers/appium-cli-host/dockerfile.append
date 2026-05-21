@@ -1,0 +1,31 @@
+# ---- appium-cli (host-Appium) layer ----
+# In host-Appium mode, Appium runs on the macOS host and ChromeDriver is
+# resolved by the host (where mac-arm64 ChromeDriver is available).
+# The container only needs `appium-cli` itself; it does NOT need Appium,
+# uiautomator2 driver, Android SDK, or platform-tools.
+ARG DEBIAN_FRONTEND=noninteractive
+ARG APPIUM_CLI_REF=main
+
+ENV UV_TOOL_DIR=/opt/uv-tools
+ENV UV_TOOL_BIN_DIR=/usr/local/bin
+
+# uv binary (multi-arch image)
+COPY --from=ghcr.io/astral-sh/uv:0.11.15 /uv /uvx /usr/local/bin/
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git; \
+    \
+    mkdir -p "${UV_TOOL_DIR}"; \
+    \
+    # appium-cli from GitHub via uv
+    uv tool install --python 3.12 --force \
+      "git+https://github.com/aRaikoFunakami/appium-cli.git@${APPIUM_CLI_REF}"; \
+    \
+    # Make uv tool dir writable by both 'vscode' and 'ubuntu' users
+    chmod -R a+rwx "${UV_TOOL_DIR}"; \
+    \
+    rm -rf /var/lib/apt/lists/*

@@ -23,6 +23,7 @@ import { createInterface } from "node:readline";
 import { resolve, dirname, join, relative } from "node:path";
 import { which } from "./which";
 import { runInit } from "./init";
+import { runAppiumHost } from "./appium-host";
 
 // docker must be present at startup; devcontainer is auto-installed on first use.
 const DOCKER = which("docker");
@@ -848,6 +849,24 @@ async function main(): Promise<void> {
   if (filtered[0] === "init") {
     runInit(filtered.slice(1));
     return;
+  }
+
+  // appium subcommand: host-side Appium lifecycle (no container needed).
+  // Usage: agent-sandbox appium host <start|stop|status|log> [args]
+  if (filtered[0] === "appium") {
+    const sub = filtered[1];
+    const rest = filtered.slice(2);
+    if (sub === "host") {
+      try {
+        await runAppiumHost(rest);
+      } catch (err) {
+        process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+      }
+      return;
+    }
+    process.stderr.write("usage: agent-sandbox appium host <start|stop|status|log> [args]\n");
+    process.exit(1);
   }
 
   // status subcommand: show container name and status
