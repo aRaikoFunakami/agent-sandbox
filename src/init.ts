@@ -1,4 +1,5 @@
 import { cpSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 const TEMPLATES_DIR = join(__dirname, "..", "templates");
@@ -208,6 +209,22 @@ function updateGitignore(target: string, additionsText: string): void {
   }
 }
 
+function createLlmEnvSet(dir: string, label: string): void {
+  mkdirSync(dir, { recursive: true });
+
+  const llmEnvExample = join(dir, "llm.env.example");
+  cpSync(join(TEMPLATES_DIR, "base", ".devcontainer", "llm.env.example"), llmEnvExample);
+
+  const llmEnvDest = join(dir, "llm.env");
+  if (!existsSync(llmEnvDest)) {
+    writeFileSync(
+      llmEnvDest,
+      "# Edit this file to configure your LLM provider.\n# See llm.env.example for available options.\n"
+    );
+    console.log(`[agent-sandbox] Created ${label}/llm.env (empty)`);
+  }
+}
+
 export function runInit(args: string[]): void {
   const force = args.includes("--force") || args.includes("-f");
   const targets = parseInstallTargets(args);
@@ -242,21 +259,8 @@ export function runInit(args: string[]): void {
   // Copy any layer extras (e.g. .playwright/cli.config.json).
   copyLayerExtras(target, targets);
 
-  // Create .agent-sandbox/ with llm.env and example.
-  const agentSandboxDir = join(target, ".agent-sandbox");
-  mkdirSync(agentSandboxDir, { recursive: true });
-
-  const llmEnvExample = join(agentSandboxDir, "llm.env.example");
-  cpSync(join(TEMPLATES_DIR, "base", ".devcontainer", "llm.env.example"), llmEnvExample);
-
-  const llmEnvDest = join(agentSandboxDir, "llm.env");
-  if (!existsSync(llmEnvDest)) {
-    writeFileSync(
-      llmEnvDest,
-      "# Edit this file to configure your LLM provider.\n# See .agent-sandbox/llm.env.example for available options.\n"
-    );
-    console.log("[agent-sandbox] Created .agent-sandbox/llm.env (empty)");
-  }
+  createLlmEnvSet(join(homedir(), ".agent-sandbox"), "~/.agent-sandbox");
+  createLlmEnvSet(join(target, ".agent-sandbox"), ".agent-sandbox");
 
   updateGitignore(join(target, ".gitignore"), gatherGitignoreAdditions(targets));
 
@@ -278,8 +282,8 @@ Profile: ${profile}
 Installs: ${enabledList}
 
 Next steps:
-  1. Edit .agent-sandbox/llm.env  (see .agent-sandbox/llm.env.example for options)
-     Or create ~/.agent-sandbox/llm.env for shared config across all projects.
+  1. Edit ~/.agent-sandbox/llm.env for shared defaults.
+     Edit .agent-sandbox/llm.env for project-specific overrides.
   2. Run:  agent-sandbox copilot --version
            agent-sandbox claude --version
 ${extraCommands.join("\n")}

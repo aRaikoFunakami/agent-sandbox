@@ -7,6 +7,7 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import {
   existsSync,
   readdirSync,
@@ -426,14 +427,49 @@ function distcleanWorkspace(workspace: string): void {
 }
 
 
+function parseEnvFile(path: string): Record<string, string> {
+  if (!existsSync(path)) return {};
+
+  const env: Record<string, string> = {};
+  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+
+    const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+
+    let value = match[2].trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    env[match[1]] = value;
+  }
+  return env;
+}
+
+function llmEnvForExec(workspace: string): Record<string, string> {
+  const hostEnv = parseEnvFile(join(homedir(), ".agent-sandbox", "llm.env"));
+  const projectEnv = parseEnvFile(join(workspace, ".agent-sandbox", "llm.env"));
+  const merged = { ...hostEnv, ...projectEnv };
+
+  // Shell-provided environment variables override file-based defaults.
+  for (const key of Object.keys(merged)) {
+    if (process.env[key] !== undefined) {
+      merged[key] = process.env[key];
+    }
+  }
+
+  return merged;
+}
+
 function execInContainer(workspace: string, command: string[]): number {
-  // Source host-level llm.env (bind-mounted) before running the command,
-  // so dynamic edits to ~/.agent-sandbox/llm.env are reflected each exec.
-  const wrappedCommand = [
-    "bash", "-c",
-    `set -a; [ -f /run/host-llm.env ] && . /run/host-llm.env; set +a; exec "$@"`,
-    "--", ...command,
-  ];
+  const envArgs = Object.entries(llmEnvForExec(workspace)).map(
+    ([key, value]) => `${key}=${value}`
+  );
+  const wrappedCommand = envArgs.length > 0 ? ["env", ...envArgs, ...command] : command;
   const result = spawnSync(
     getDevcontainer(),
     ["exec", "--workspace-folder", workspace, ...wrappedCommand],

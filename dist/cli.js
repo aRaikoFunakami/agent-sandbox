@@ -8,6 +8,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const node_child_process_1 = require("node:child_process");
 const node_crypto_1 = require("node:crypto");
+const node_os_1 = require("node:os");
 const node_fs_1 = require("node:fs");
 const node_readline_1 = require("node:readline");
 const node_path_1 = require("node:path");
@@ -372,14 +373,41 @@ function distcleanWorkspace(workspace) {
     }
     process.stdout.write("[agent-sandbox] Distclean complete.\n");
 }
+function parseEnvFile(path) {
+    if (!(0, node_fs_1.existsSync)(path))
+        return {};
+    const env = {};
+    for (const line of (0, node_fs_1.readFileSync)(path, "utf8").split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (trimmed === "" || trimmed.startsWith("#"))
+            continue;
+        const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+        if (!match)
+            continue;
+        let value = match[2].trim();
+        if ((value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1);
+        }
+        env[match[1]] = value;
+    }
+    return env;
+}
+function llmEnvForExec(workspace) {
+    const hostEnv = parseEnvFile((0, node_path_1.join)((0, node_os_1.homedir)(), ".agent-sandbox", "llm.env"));
+    const projectEnv = parseEnvFile((0, node_path_1.join)(workspace, ".agent-sandbox", "llm.env"));
+    const merged = { ...hostEnv, ...projectEnv };
+    // Shell-provided environment variables override file-based defaults.
+    for (const key of Object.keys(merged)) {
+        if (process.env[key] !== undefined) {
+            merged[key] = process.env[key];
+        }
+    }
+    return merged;
+}
 function execInContainer(workspace, command) {
-    // Source host-level llm.env (bind-mounted) before running the command,
-    // so dynamic edits to ~/.agent-sandbox/llm.env are reflected each exec.
-    const wrappedCommand = [
-        "bash", "-c",
-        `set -a; [ -f /run/host-llm.env ] && . /run/host-llm.env; set +a; exec "$@"`,
-        "--", ...command,
-    ];
+    const envArgs = Object.entries(llmEnvForExec(workspace)).map(([key, value]) => `${key}=${value}`);
+    const wrappedCommand = envArgs.length > 0 ? ["env", ...envArgs, ...command] : command;
     const result = (0, node_child_process_1.spawnSync)(getDevcontainer(), ["exec", "--workspace-folder", workspace, ...wrappedCommand], { stdio: "inherit" });
     return result.status ?? 1;
 }
