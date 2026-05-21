@@ -62,10 +62,32 @@ agent-sandbox init --force                                  # 既存の設定を
 
 環境変数の優先順位は **ホスト共通 < プロジェクト固有 < コマンドライン指定** です。例えば、`~/.agent-sandbox/llm.env` に共通の API endpoint を置き、特定プロジェクトだけ `.agent-sandbox/llm.env` で model を変え、さらに一時的に `COPILOT_MODEL=... agent-sandbox copilot ...` のように上書きできます。
 
+#### LLM サーバー URL / モデルの管理コマンド
+
+`llm.env` を直接編集しなくても、以下のコマンドで設定の参照・更新ができます。デフォルトの書き込み先はカレントワークスペースの `.agent-sandbox/llm.env` で、`--global` を付けると `~/.agent-sandbox/llm.env` を更新します。
+
+```bash
+# サーバー URL の参照・設定（COPILOT_PROVIDER_TYPE=openai も同時に設定されます）
+agent-sandbox url
+agent-sandbox url http://10.5.104.141:8000/v1
+agent-sandbox url http://10.5.104.141:8000/v1 --global
+
+# モデル名の参照・設定
+agent-sandbox model
+agent-sandbox model Qwen3.5-9B-bf16
+agent-sandbox model Qwen3.5-9B-bf16 --global
+
+# 設定済み URL に対して OpenAI 互換の /models を問い合わせ
+agent-sandbox models
+agent-sandbox models --url http://10.5.104.141:8000/v1   # 一時的に別の URL を確認
+```
+
+`models` の出力では、現在 `COPILOT_MODEL` に設定されているモデル ID の行頭に `*` が付きます。`agent-sandbox status` は Docker のコンテナ状態に加えて、現在有効な `COPILOT_PROVIDER_BASE_URL` / `COPILOT_PROVIDER_TYPE` / `COPILOT_MODEL` と、その値がどのファイル（ホスト・プロジェクト・プロセス環境）由来かを表示します。
+
 ### コンテナの状態確認・停止・クリーンアップ
 
 ```bash
-agent-sandbox status        # コンテナ名・状態・イメージを表示
+agent-sandbox status        # コンテナ状態 + 現在の LLM 設定を表示
 agent-sandbox stop          # カレントワークスペースのコンテナを停止
 agent-sandbox clean         # コンテナとイメージを削除（ディスク解放）
 agent-sandbox distclean     # clean + ボリューム削除 + Docker ビルドキャッシュ削除

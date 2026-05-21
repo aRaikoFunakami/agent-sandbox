@@ -303,9 +303,22 @@ function showStatus(workspace) {
     const output = result.stdout.trim();
     if (!output || output === "CONTAINER ID   NAMES   STATUS   IMAGE") {
         process.stdout.write(`[agent-sandbox] No container found for ${workspace}\n`);
-        return;
     }
-    process.stdout.write(output + "\n");
+    else {
+        process.stdout.write(output + "\n");
+    }
+    // LLM configuration summary.
+    const resolved = resolveLlmEnv(workspace);
+    process.stdout.write("\nLLM configuration:\n");
+    for (const key of [LLM_KEYS.url, LLM_KEYS.type, LLM_KEYS.model]) {
+        const value = resolved.values[key];
+        if (value === undefined) {
+            process.stdout.write(`  ${key}: (unset)\n`);
+        }
+        else {
+            process.stdout.write(`  ${key}: ${value} ${sourceLabel(workspace, resolved.sources[key])}\n`);
+        }
+    }
 }
 function stopContainers(workspace) {
     const result = (0, node_child_process_1.spawnSync)(DOCKER, [
@@ -383,6 +396,18 @@ function distcleanWorkspace(workspace) {
     }
     process.stdout.write("[agent-sandbox] Distclean complete.\n");
 }
+// === LLM environment configuration ===
+const LLM_KEYS = {
+    url: "COPILOT_PROVIDER_BASE_URL",
+    type: "COPILOT_PROVIDER_TYPE",
+    model: "COPILOT_MODEL",
+};
+function hostLlmEnvPath() {
+    return (0, node_path_1.join)((0, node_os_1.homedir)(), ".agent-sandbox", "llm.env");
+}
+function projectLlmEnvPath(workspace) {
+    return (0, node_path_1.join)(workspace, ".agent-sandbox", "llm.env");
+}
 function parseEnvFile(path) {
     if (!(0, node_fs_1.existsSync)(path))
         return {};
@@ -403,23 +428,238 @@ function parseEnvFile(path) {
     }
     return env;
 }
-function llmEnvForExec(workspace) {
-    const hostEnv = parseEnvFile((0, node_path_1.join)((0, node_os_1.homedir)(), ".agent-sandbox", "llm.env"));
-    const projectEnv = parseEnvFile((0, node_path_1.join)(workspace, ".agent-sandbox", "llm.env"));
-    const merged = { ...hostEnv, ...projectEnv };
-    // Shell-provided environment variables override file-based defaults.
-    for (const key of Object.keys(merged)) {
+/** Resolve effective LLM env values with their source. */
+function resolveLlmEnv(workspace) {
+    const hostEnv = parseEnvFile(hostLlmEnvPath());
+    const projectEnv = workspace ? parseEnvFile(projectLlmEnvPath(workspace)) : {};
+    const values = {};
+    const sources = {};
+    const keys = new Set([
+        ...Object.keys(hostEnv),
+        ...Object.keys(projectEnv),
+    ]);
+    for (const key of keys) {
         if (process.env[key] !== undefined) {
-            merged[key] = process.env[key];
+            values[key] = process.env[key];
+            sources[key] = "process";
+        }
+        else if (key in projectEnv) {
+            values[key] = projectEnv[key];
+            sources[key] = "project";
+        }
+        else {
+            values[key] = hostEnv[key];
+            sources[key] = "host";
         }
     }
-    return merged;
+    return { values, sources };
+}
+function llmEnvForExec(workspace) {
+    return resolveLlmEnv(workspace).values;
+}
+/**
+ * Write or update env entries in a file, preserving comments and other lines.
+ * Creates the file (and parent dir) if missing.
+ */
+function writeEnvValues(path, entries) {
+    (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(path), { recursive: true });
+    const existing = (0, node_fs_1.existsSync)(path) ? (0, node_fs_1.readFileSync)(path, "utf8") : "";
+    const lines = existing.split(/\r?\n/);
+    const remaining = new Set(Object.keys(entries));
+    const updated = lines.map((line) => {
+        const trimmed = line.trim();
+        if (trimmed === "" || trimmed.startsWith("#"))
+            return line;
+        const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/);
+        if (!match)
+            return line;
+        const key = match[1];
+        if (!(key in entries))
+            return line;
+        remaining.delete(key);
+        return `${key}=${entries[key]}`;
+    });
+    // Drop a trailing empty line if present so appending is tidy.
+    while (updated.length > 0 && updated[updated.length - 1] === "") {
+        updated.pop();
+    }
+    for (const key of remaining) {
+        updated.push(`${key}=${entries[key]}`);
+    }
+    (0, node_fs_1.writeFileSync)(path, updated.join("\n") + "\n");
 }
 function execInContainer(workspace, command) {
     const envArgs = Object.entries(llmEnvForExec(workspace)).map(([key, value]) => `${key}=${value}`);
     const wrappedCommand = envArgs.length > 0 ? ["env", ...envArgs, ...command] : command;
     const result = (0, node_child_process_1.spawnSync)(getDevcontainer(), ["exec", "--workspace-folder", workspace, ...wrappedCommand], { stdio: "inherit" });
     return result.status ?? 1;
+}
+// === LLM config subcommands ===
+function sourceLabel(workspace, source) {
+    switch (source) {
+        case "process":
+            return "(from process env)";
+        case "project":
+            return workspace
+                ? `(from ${projectLlmEnvPath(workspace)})`
+                : "(from project)";
+        case "host":
+            return `(from ${hostLlmEnvPath()})`;
+        case "unset":
+            return "(unset)";
+    }
+}
+function targetEnvPath(workspace, global) {
+    return global ? hostLlmEnvPath() : projectLlmEnvPath(workspace);
+}
+function validateUrl(value) {
+    let parsed;
+    try {
+        parsed = new URL(value);
+    }
+    catch {
+        throw new Error(`error: invalid URL: ${value}`);
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`error: URL must use http:// or https:// (got ${parsed.protocol})`);
+    }
+    // Normalize: strip trailing slashes.
+    return value.replace(/\/+$/, "");
+}
+/** Compute the OpenAI-compatible /models endpoint from a base URL. */
+function modelsEndpoint(baseUrl) {
+    const trimmed = baseUrl.replace(/\/+$/, "");
+    if (/\/v\d+$/i.test(trimmed)) {
+        return `${trimmed}/models`;
+    }
+    return `${trimmed}/v1/models`;
+}
+function parseGlobalFlag(args) {
+    const rest = [];
+    let global = false;
+    for (const arg of args) {
+        if (arg === "--global" || arg === "-g") {
+            global = true;
+        }
+        else {
+            rest.push(arg);
+        }
+    }
+    return { rest, global };
+}
+function handleUrlCommand(workspace, args) {
+    const { rest, global } = parseGlobalFlag(args);
+    const resolved = resolveLlmEnv(workspace);
+    if (rest.length === 0) {
+        const value = resolved.values[LLM_KEYS.url];
+        if (value) {
+            process.stdout.write(`${value} ${sourceLabel(workspace, resolved.sources[LLM_KEYS.url])}\n`);
+        }
+        else {
+            process.stdout.write(`${LLM_KEYS.url} is unset\n`);
+        }
+        return;
+    }
+    if (rest.length > 1) {
+        throw new Error("error: agent-sandbox url accepts at most one URL argument");
+    }
+    const url = validateUrl(rest[0]);
+    const path = targetEnvPath(workspace, global);
+    writeEnvValues(path, {
+        [LLM_KEYS.url]: url,
+        [LLM_KEYS.type]: "openai",
+    });
+    process.stdout.write(`[agent-sandbox] Set ${LLM_KEYS.url}=${url} in ${path}\n`);
+    process.stdout.write(`[agent-sandbox] Set ${LLM_KEYS.type}=openai in ${path}\n`);
+}
+function handleModelCommand(workspace, args) {
+    const { rest, global } = parseGlobalFlag(args);
+    const resolved = resolveLlmEnv(workspace);
+    if (rest.length === 0) {
+        const value = resolved.values[LLM_KEYS.model];
+        if (value) {
+            process.stdout.write(`${value} ${sourceLabel(workspace, resolved.sources[LLM_KEYS.model])}\n`);
+        }
+        else {
+            process.stdout.write(`${LLM_KEYS.model} is unset\n`);
+        }
+        return;
+    }
+    if (rest.length > 1) {
+        throw new Error("error: agent-sandbox model accepts at most one model argument");
+    }
+    const model = rest[0].trim();
+    if (model === "") {
+        throw new Error("error: model name must not be empty");
+    }
+    const path = targetEnvPath(workspace, global);
+    writeEnvValues(path, { [LLM_KEYS.model]: model });
+    process.stdout.write(`[agent-sandbox] Set ${LLM_KEYS.model}=${model} in ${path}\n`);
+}
+async function handleModelsCommand(workspace, args) {
+    let overrideUrl = null;
+    const rest = [];
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--url" && i + 1 < args.length) {
+            overrideUrl = args[++i];
+        }
+        else if (args[i].startsWith("--url=")) {
+            overrideUrl = args[i].slice("--url=".length);
+        }
+        else {
+            rest.push(args[i]);
+        }
+    }
+    if (rest.length > 0) {
+        throw new Error(`error: unexpected argument(s): ${rest.join(", ")}`);
+    }
+    const resolved = resolveLlmEnv(workspace);
+    const baseUrl = overrideUrl
+        ? validateUrl(overrideUrl)
+        : resolved.values[LLM_KEYS.url];
+    if (!baseUrl) {
+        throw new Error(`error: no ${LLM_KEYS.url} configured. Set one with:\n` +
+            `  agent-sandbox url http://host:8000/v1\n` +
+            `Or pass --url <url> to query a one-off endpoint.`);
+    }
+    const endpoint = modelsEndpoint(baseUrl);
+    process.stderr.write(`[agent-sandbox] Fetching ${endpoint} …\n`);
+    let response;
+    try {
+        response = await fetch(endpoint);
+    }
+    catch (err) {
+        throw new Error(`error: failed to reach ${endpoint}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!response.ok) {
+        throw new Error(`error: ${endpoint} returned HTTP ${response.status}`);
+    }
+    let body;
+    try {
+        body = await response.json();
+    }
+    catch {
+        throw new Error(`error: ${endpoint} did not return valid JSON`);
+    }
+    const data = body?.data;
+    if (!Array.isArray(data)) {
+        throw new Error(`error: unexpected response shape from ${endpoint}; expected {"data":[...]}`);
+    }
+    const ids = [];
+    for (const entry of data) {
+        if (entry && typeof entry === "object" && typeof entry.id === "string") {
+            ids.push(entry.id);
+        }
+    }
+    if (ids.length === 0) {
+        process.stdout.write("[agent-sandbox] No models returned.\n");
+        return;
+    }
+    const activeModel = resolved.values[LLM_KEYS.model];
+    for (const id of ids) {
+        const marker = id === activeModel ? "* " : "  ";
+        process.stdout.write(`${marker}${id}\n`);
+    }
 }
 function printUsage() {
     process.stderr.write("usage: agent-sandbox <subcommand> [args…]\n" +
@@ -429,11 +669,17 @@ function printUsage() {
         "                             Scaffold .devcontainer/ into the current directory.\n" +
         "                             Targets: playwright-cli, appium-cli\n" +
         "                             (comma-separated or repeat --install=...)\n" +
-        "  status                     Show container name and status\n" +
+        "  status                     Show container status and active LLM configuration\n" +
         "  stop                       Stop the running devcontainer\n" +
         "  clean                      Remove containers and old images for this workspace\n" +
         "  distclean                  clean + remove volumes and Docker build cache\n" +
         "  rebuild                    distclean + rebuild the container from scratch\n" +
+        "  url [<url>] [--global]     Show or set COPILOT_PROVIDER_BASE_URL (also sets\n" +
+        "                             COPILOT_PROVIDER_TYPE=openai). Writes to project\n" +
+        "                             .agent-sandbox/llm.env by default; --global writes\n" +
+        "                             to ~/.agent-sandbox/llm.env.\n" +
+        "  model [<model>] [--global] Show or set COPILOT_MODEL (same precedence rules).\n" +
+        "  models [--url <url>]       List models from the OpenAI-compatible endpoint.\n" +
         "\n" +
         "Agent commands (run inside devcontainer):\n" +
         "  copilot --allow-all -p 'fix all failing tests'\n" +
@@ -447,17 +693,17 @@ function printUsage() {
         "Examples:\n" +
         "  agent-sandbox init\n" +
         "  agent-sandbox init --install=playwright-cli\n" +
-        "  agent-sandbox init --install=appium-cli\n" +
-        "  agent-sandbox init --install=playwright-cli,appium-cli\n" +
-        "  agent-sandbox init --install=playwright-cli --install=appium-cli\n" +
         "  agent-sandbox status\n" +
         "  agent-sandbox stop\n" +
         "  agent-sandbox distclean\n" +
         "  agent-sandbox rebuild\n" +
+        "  agent-sandbox url http://10.5.104.141:8000/v1\n" +
+        "  agent-sandbox url http://10.5.104.141:8000/v1 --global\n" +
+        "  agent-sandbox model Qwen3.5-9B-bf16\n" +
+        "  agent-sandbox models\n" +
+        "  agent-sandbox models --url http://10.5.104.141:8000/v1\n" +
         "  agent-sandbox copilot --allow-all -p 'fix all failing tests'\n" +
         "  agent-sandbox claude --dangerously-skip-permissions -p 'run tests'\n" +
-        "  agent-sandbox playwright-cli open https://example.com\n" +
-        "  agent-sandbox appium-cli devices --platform android\n" +
         "  agent-sandbox -w /path/to/project copilot -p 'review code'\n");
 }
 async function main() {
@@ -545,6 +791,42 @@ async function main() {
         }
         return;
     }
+    // url subcommand: show/set COPILOT_PROVIDER_BASE_URL
+    if (filtered[0] === "url") {
+        try {
+            const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+            handleUrlCommand(workspace, filtered.slice(1));
+        }
+        catch (err) {
+            process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+            process.exit(1);
+        }
+        return;
+    }
+    // model subcommand: show/set COPILOT_MODEL
+    if (filtered[0] === "model") {
+        try {
+            const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+            handleModelCommand(workspace, filtered.slice(1));
+        }
+        catch (err) {
+            process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+            process.exit(1);
+        }
+        return;
+    }
+    // models subcommand: list models from the OpenAI-compatible endpoint
+    if (filtered[0] === "models") {
+        try {
+            const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+            await handleModelsCommand(workspace, filtered.slice(1));
+        }
+        catch (err) {
+            process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+            process.exit(1);
+        }
+        return;
+    }
     try {
         const workspace = workspaceOverride ?? findWorkspace(process.cwd());
         await checkDevcontainerChanged(workspace);
@@ -588,4 +870,7 @@ async function main() {
         process.exit(1);
     }
 }
-main();
+main().catch((err) => {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+});
