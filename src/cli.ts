@@ -389,6 +389,38 @@ function cleanWorkspace(workspace: string): void {
 }
 
 
+/** Remove containers, images, volumes, and Docker build cache for a full rebuild from scratch. */
+function distcleanWorkspace(workspace: string): void {
+  cleanWorkspace(workspace);
+
+  // Remove volumes associated with this workspace's devcontainer.
+  const volumeResult = spawnSync(DOCKER, [
+    "volume", "ls", "-q",
+    "--filter", `label=devcontainer.local_folder=${workspace}`,
+  ], { encoding: "utf8" });
+  const volumeIds = volumeResult.stdout.trim().split("\n").filter(Boolean);
+  if (volumeIds.length > 0) {
+    process.stdout.write(
+      `[agent-sandbox] Removing ${volumeIds.length} volume(s) …\n`
+    );
+    spawnSync(DOCKER, ["volume", "rm", "-f", ...volumeIds], { stdio: "inherit" });
+  }
+
+  // Prune builder cache for devcontainer builds.
+  process.stdout.write("[agent-sandbox] Pruning Docker build cache …\n");
+  spawnSync(DOCKER, ["builder", "prune", "-f"], { stdio: "inherit" });
+
+  // Remove state file so next build is treated as fresh.
+  const stateFile = join(workspace, ".devcontainer", STATE_FILE);
+  if (existsSync(stateFile)) {
+    rmSync(stateFile);
+    process.stdout.write("[agent-sandbox] Removed build state file.\n");
+  }
+
+  process.stdout.write("[agent-sandbox] Distclean complete.\n");
+}
+
+
 function execInContainer(workspace: string, command: string[]): number {
   const result = spawnSync(
     getDevcontainer(),
@@ -410,6 +442,8 @@ function printUsage(): void {
     "  status                     Show container name and status\n" +
     "  stop                       Stop the running devcontainer\n" +
     "  clean                      Remove containers and old images for this workspace\n" +
+    "  distclean                  clean + remove volumes and Docker build cache\n" +
+    "  rebuild                    distclean + rebuild the container from scratch\n" +
     "\n" +
     "Agent commands (run inside devcontainer):\n" +
     "  copilot --allow-all -p 'fix all failing tests'\n" +
@@ -428,6 +462,8 @@ function printUsage(): void {
     "  agent-sandbox init --install=playwright-cli --install=appium-cli\n" +
     "  agent-sandbox status\n" +
     "  agent-sandbox stop\n" +
+    "  agent-sandbox distclean\n" +
+    "  agent-sandbox rebuild\n" +
     "  agent-sandbox copilot --allow-all -p 'fix all failing tests'\n" +
     "  agent-sandbox claude --dangerously-skip-permissions -p 'run tests'\n" +
     "  agent-sandbox playwright-cli open https://example.com\n" +
@@ -491,6 +527,33 @@ async function main(): Promise<void> {
     try {
       const workspace = workspaceOverride ?? findWorkspace(process.cwd());
       cleanWorkspace(workspace);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // distclean subcommand: clean + remove volumes and build cache
+  if (filtered[0] === "distclean") {
+    try {
+      const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+      distcleanWorkspace(workspace);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // rebuild subcommand: distclean + build fresh container
+  if (filtered[0] === "rebuild") {
+    try {
+      const workspace = workspaceOverride ?? findWorkspace(process.cwd());
+      distcleanWorkspace(workspace);
+      process.stderr.write("[agent-sandbox] Rebuilding devcontainer from scratch …\n");
+      ensureContainer(workspace);
+      process.stdout.write("[agent-sandbox] Rebuild complete.\n");
     } catch (err) {
       process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
