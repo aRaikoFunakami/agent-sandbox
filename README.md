@@ -265,6 +265,7 @@ agent-sandbox init --install=appium-cli         # macOS では host モード既
 agent-sandbox appium-cli devices --platform android
 agent-sandbox appium-cli session start          # ホスト Appium に接続
 agent-sandbox appium-cli activate_app com.android.chrome
+agent-sandbox appium-cli switch_context webview   # WebView コンテキストに切替
 agent-sandbox appium-cli web_eval 'location.href="https://www.yahoo.co.jp"'
 agent-sandbox appium-cli webview_title
 
