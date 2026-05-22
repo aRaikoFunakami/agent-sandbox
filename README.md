@@ -126,11 +126,9 @@ agent-sandbox playwright-cli snapshot
 agent-sandbox playwright-cli close
 
 # appium-cli (--install=appium-cli で init した場合)
-agent-sandbox appium-cli doctor
-agent-sandbox appium-cli devices --platform android
-agent-sandbox appium-cli server start
-agent-sandbox appium-cli session start
-agent-sandbox appium-cli snapshot
+# 注意: agent-sandbox は毎回コンテナを停止するため、以下は単発コマンドとして使う
+agent-sandbox appium-cli doctor                        # 環境チェック
+agent-sandbox appium-cli devices --platform android    # デバイス一覧
 
 # ワークスペースを明示指定
 agent-sandbox -w /path/to/project copilot --allow-all -p "review code"
@@ -152,11 +150,10 @@ adb kill-server
 adb -a -P 5037 nodaemon server
 ```
 
-その後、コンテナ内から:
+その後、コンテナ内から動作確認:
 
 ```bash
 agent-sandbox appium-cli devices --platform android
-agent-sandbox appium-cli server start
 ```
 
 > ⚠️ `adb -a` は ADB server をネットワークインタフェースに公開します。ファイアウォール内 / 信頼できるネットワークでのみ使用してください。
