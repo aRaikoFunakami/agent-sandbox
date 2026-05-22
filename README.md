@@ -251,28 +251,7 @@ agent-sandbox appium host stop
 
 `agent-sandbox appium-cli ...` は host Appium を暗黙起動しません。host/container の境界をユーザーが明示的に意識できるように、`appium host start` は必ず手動で呼んでください。
 
-### 典型的なエンドツーエンド手順
-
-```bash
-# 1. ホスト (Mac) で
-agent-sandbox appium host start
-
-# 2. ワークスペース初回セットアップ
-cd your-project
-agent-sandbox init --install=appium-cli         # macOS では host モード既定
-
-# 3. コンテナ内で (APPIUM_SERVER_URL は containerEnv 経由で自動設定)
-agent-sandbox appium-cli devices --platform android
-agent-sandbox appium-cli session start          # ホスト Appium に接続
-agent-sandbox appium-cli activate_app com.android.chrome
-agent-sandbox appium-cli switch_context webview   # WebView コンテキストに切替
-agent-sandbox appium-cli web_eval 'location.href="https://www.yahoo.co.jp"'
-agent-sandbox appium-cli webview_title
-
-# 4. 後片付け
-agent-sandbox appium-cli session stop
-agent-sandbox appium host stop
-```
+> **注意**: `agent-sandbox` はコマンド実行ごとにコンテナを起動・停止するため、`appium-cli session start` で開始したセッションは次のコマンド実行時には消えています。appium-cli のインタラクティブな操作（session start → activate_app → web_eval → session stop）は、VS Code Dev Containers 拡張でコンテナを開いた状態で直接実行するか、`agent-sandbox copilot` / `claude` のツールとして AI エージェントに委任してください。
 
 ### 既存ワークスペースのマイグレーション
 
