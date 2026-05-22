@@ -43,7 +43,7 @@ agent-sandbox init --force                                  # 既存の設定を
 
 `--install=playwright-cli` を指定した場合だけ、Playwright 公式 image をベースに `@playwright/cli` と Chromium をイメージビルド時に入れます。ブラウザを `postCreateCommand` で入れないため、ワークスペースごとのコンテナ writable layer が肥大化しにくくなります。
 
-`--install=appium-cli` を指定すると、OpenJDK 17 + Android command-line tools + `platform-tools` + Appium 3 (`uiautomator2` driver pinned) + [`aRaikoFunakami/appium-cli`](https://github.com/aRaikoFunakami/appium-cli) を `uv tool install` でビルド時に導入します。`xcuitest` driver は入りません (iOS 自動化は macOS ホスト/ Xcode 必須のためコンテナ対象外)。Android デバイスへの ADB 接続は **既定ではホスト側 ADB server に TCP で接続** します (下記 [Android デバイス接続](#android-デバイス接続) 参照)。
+`--install=appium-cli` を指定すると、[`aRaikoFunakami/appium-cli`](https://github.com/aRaikoFunakami/appium-cli) を `uv tool install` でビルド時に導入します。macOS では **デフォルトで host Appium モード** となり、コンテナには `adb` と `appium-cli` のみ入ります（Appium 本体・uiautomator2 driver・Android SDK・Java はホスト側に必要）。Linux では `--appium-server=container` で従来のフル Appium 入りイメージも選べます。詳細は [Apple Silicon macOS + Chrome / WebView 自動化](#apple-silicon-macos--chrome--webview-自動化-host-appium-モード) を参照してください。
 
 `--install` を複数指定すると、`appium-cli+playwright-cli` の組み合わせ profile が生成され、Playwright image の上に Appium レイヤを積みます。生成物の `agent-sandbox-devcontainer:<profile>` タグはアルファベット順 (`appium-cli+playwright-cli`) で安定化されます。
 
@@ -121,9 +121,8 @@ agent-sandbox copilot --allow-all -p "$(cat ./prompts/normal.txt)"
 agent-sandbox claude --dangerously-skip-permissions -p "run tests and fix failures"
 
 # playwright-cli (--install=playwright-cli で init した場合)
-agent-sandbox playwright-cli open https://example.com
-agent-sandbox playwright-cli snapshot
-agent-sandbox playwright-cli close
+# 注意: agent-sandbox は毎回コンテナを停止するため、以下は単発コマンドとして使う
+agent-sandbox playwright-cli snapshot https://example.com   # URL を指定してスナップショット取得
 
 # appium-cli (--install=appium-cli で init した場合)
 # 注意: agent-sandbox は毎回コンテナを停止するため、以下は単発コマンドとして使う
@@ -136,24 +135,18 @@ agent-sandbox -w /path/to/project copilot --allow-all -p "review code"
 
 ## Android デバイス接続
 
-`--install=appium-cli` プロファイルは、Android デバイスに 2 通りの方法で接続できます。
+### host Appium モード (macOS 既定)
 
-### 既定: ホスト ADB server に TCP 接続 (macOS / Linux 両対応)
+host モードでは `containerEnv.ADB_SERVER_SOCKET=tcp:host.docker.internal:5037` が自動設定されるため、コンテナ内の `adb` はホスト側の ADB server に自動接続します。特別な設定は不要です（ホスト側で `adb` が動作していれば OK）。
 
-生成された `.devcontainer/devcontainer.json` の `containerEnv` には `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037` がデフォルトで入っているため、コンテナ内 `adb` は **ホスト側で稼働中の ADB server** に接続します。
+### container モード (Linux / `--appium-server=container`)
 
-ホスト側で次のように ADB server を LAN 公開モードで起動します:
+container モードでも `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037` がデフォルトで入っています。ホスト側で ADB server を LAN 公開モードで起動してください:
 
 ```bash
 # ホストの別ターミナルで実行
 adb kill-server
 adb -a -P 5037 nodaemon server
-```
-
-その後、コンテナ内から動作確認:
-
-```bash
-agent-sandbox appium-cli devices --platform android
 ```
 
 > ⚠️ `adb -a` は ADB server をネットワークインタフェースに公開します。ファイアウォール内 / 信頼できるネットワークでのみ使用してください。

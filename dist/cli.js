@@ -685,7 +685,7 @@ function printUsage() {
         "Agent commands (run inside devcontainer):\n" +
         "  copilot --allow-all -p 'fix all failing tests'\n" +
         "  claude --dangerously-skip-permissions -p 'run tests'\n" +
-        "  playwright-cli open https://example.com     (requires --install=playwright-cli)\n" +
+        "  playwright-cli snapshot https://example.com (requires --install=playwright-cli)\n" +
         "  appium-cli doctor                            (requires --install=appium-cli)\n" +
         "\n" +
         "Options:\n" +
