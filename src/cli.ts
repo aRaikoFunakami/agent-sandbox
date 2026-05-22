@@ -968,22 +968,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Determine if this command should keep the container alive after exit.
-  // appium-cli commands maintain a persistent session daemon inside the
-  // container, so we must not stop the container between invocations.
-  // "session stop" is special: stop the container afterwards.
-  const isAppiumCli = filtered[0] === "appium-cli";
-  const isSessionStop = isAppiumCli && filtered[1] === "session" && filtered[2] === "stop";
-  const keepAlive = isAppiumCli && !isSessionStop;
-
   try {
     const workspace = workspaceOverride ?? findWorkspace(process.cwd());
     await checkDevcontainerChanged(workspace);
 
-    // Stop orphaned container from a previous run (e.g. after SIGKILL),
-    // but only if the container is not supposed to be kept alive (appium-cli
-    // may have intentionally left it running from a prior session start).
-    if (!keepAlive && containerIsRunning(workspace)) {
+    // Stop orphaned container from a previous run (e.g. after SIGKILL).
+    if (containerIsRunning(workspace)) {
       process.stderr.write("[agent-sandbox] Stopping orphaned container from previous run …\n");
       stopContainers(workspace);
     }
@@ -992,8 +982,7 @@ async function main(): Promise<void> {
 
     // Watchdog: if this process is killed (e.g. SIGKILL), the detached
     // watchdog will detect parent death and stop the container.
-    // Skip watchdog for keep-alive commands — the container must survive.
-    const watchdogPid = keepAlive ? null : spawnWatchdog(workspace);
+    const watchdogPid = spawnWatchdog(workspace);
 
     // Register cleanup to stop the container on exit or signal.
     let cleaned = false;
@@ -1004,12 +993,10 @@ async function main(): Promise<void> {
       if (watchdogPid) {
         try { process.kill(watchdogPid); } catch { /* already gone */ }
       }
-      if (!keepAlive) {
-        try {
-          stopContainers(workspace);
-        } catch {
-          // Best-effort cleanup; ignore errors.
-        }
+      try {
+        stopContainers(workspace);
+      } catch {
+        // Best-effort cleanup; ignore errors.
       }
     };
     process.on("SIGINT", () => { cleanup(); process.exit(130); });
